@@ -1,0 +1,140 @@
+#######################################################################
+# CADalytix Unified Installer - .gitignore
+# Repo root: Prod_Install_Wizard_Deployment/installer-unified/
+#######################################################################
+
+# =========================
+# Rust / Cargo
+# =========================
+/target/
+/**/target/
+**/*.rs.bk
+
+# Cargo build artifacts / temp
+**/*.pdb
+**/*.dSYM/
+**/*.rlib
+**/*.rmeta
+
+# =========================
+# Node / Frontend (Vite/React)
+# =========================
+/frontend/node_modules/
+/frontend/dist/
+/frontend/.vite/
+/frontend/.turbo/
+/frontend/.cache/
+**/node_modules/
+**/dist/
+**/.vite/
+**/.turbo/
+**/.cache/
+
+# Logs
+**/*.log
+**/*.log.*
+**/*.out
+**/*.tmp
+
+# =========================
+# CADalytix logs & proof artifacts (keep repo clean)
+# =========================
+/Prod_Wizard_Log/
+/**/Prod_Wizard_Log/
+
+# If logs are ever created elsewhere:
+**/Prod_Wizard_Log/**
+
+# =========================
+# Installer outputs / bundles / packages (never commit)
+# =========================
+# Common bundle/output folder names
+/CADALYTIX_INSTALLER/
+/BUNDLES/
+/OFFLINE/
+/INSTALLER/
+/OUTPUT/
+/OUT/
+/DIST/
+/RELEASE/
+/RELEASES/
+/STAGING/
+/package/
+/packages/
+/bundle/
+/bundles/
+
+# Archives / deliverables
+**/*.zip
+**/*.7z
+**/*.tar
+**/*.tar.gz
+**/*.tgz
+**/*.gz
+**/*.bz2
+**/*.xz
+**/*.iso
+**/*.dmg
+**/*.pkg
+**/*.msi
+**/*.exe
+**/*.deb
+**/*.rpm
+**/*.AppImage
+**/*.snap
+
+# Checksums/manifests produced by build scripts
+**/MANIFEST.sha256
+**/*.sha256
+**/*.sha1
+**/*.md5
+
+# =========================
+# Tauri / Desktop build artifacts
+# =========================
+# Tauri build output can appear under src-tauri or root depending on setup
+/src-tauri/target/
+/src-tauri/.cargo/
+/src-tauri/gen/
+/src-tauri/installer/
+/src-tauri/bundle/
+/src-tauri/dist/
+**/src-tauri/target/
+**/src-tauri/bundle/
+**/src-tauri/dist/
+**/src-tauri/installer/
+**/.tauri/
+
+# =========================
+# OS / IDE junk
+# =========================
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# JetBrains (RustRover/IntelliJ)
+.idea/
+*.iml
+
+# VS Code
+.vscode/
+
+# =========================
+# Env / secrets (never commit)
+# =========================
+.env
+.env.*
+!.env.example
+**/*.key
+**/*.pem
+**/*.pfx
+**/*.p12
+**/*.crt
+
+# =========================
+# Misc temp
+# =========================
+**/.tmp/
+**/.temp/
+**/tmp/
+**/temp/

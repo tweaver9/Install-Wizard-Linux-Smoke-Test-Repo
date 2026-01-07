@@ -1,0 +1,84 @@
+[package]
+name = "installer-unified"
+version = "0.1.0"
+description = "CADalytix Unified Cross-Platform Installer"
+authors = ["CADalytix"]
+license = "PROPRIETARY"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "installer_unified"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.3", features = [] }
+
+[dependencies]
+# Core Tauri
+tauri = { version = "2.9.5", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-http = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-store = "2"
+tauri-plugin-process = "2"
+tauri-plugin-log = "2"
+
+# Database
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "tls-native-tls", "postgres", "chrono", "uuid"] }
+# Enable `chrono` so we can bind/read SQL Server datetime values without custom parsing.
+tiberius = { version = "0.12", features = ["tokio", "native-tls", "chrono"] }
+tokio = { version = "1.0", features = ["full"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+futures = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+jsonwebtoken = "9"
+
+# HTTP/Networking
+reqwest = { version = "0.12", features = ["json", "native-tls"] }
+
+# Cryptography
+ring = "0.17"
+sha2 = "0.10"
+base64 = "0.22"
+
+# Archive/Compression (for migration bundles)
+zip = "0.6"
+aes-gcm = "0.10"
+
+# Configuration
+config = "0.14"
+toml = "0.8"
+
+# Logging
+log = "0.4"
+fern = { version = "0.7", features = ["chrono"] }
+tracing = "0.1"
+
+# Utilities
+anyhow = "1.0"
+thiserror = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+tokio-retry = "0.3"
+indicatif = "0.17"
+dirs = "5.0"
+which = "5.0"
+regex = "1.10"
+
+# Headless Linux TUI (terminal wizard UI)
+crossterm = "0.27"
+ratatui = "0.26"
+async-trait = "0.1.89"
+
+# Windows-Specific
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winuser", "winsvc", "winbase"] }
+windows-service = "0.6"
+
+# Linux-Specific
+[target.'cfg(target_os = "linux")'.dependencies]
+libsystemd = "0.7"

@@ -1,0 +1,111 @@
+# Linux Smoke Test Workflow
+# Phase 6.7 — Automated Linux smoke test to generate P6_smoke_linux.log
+#
+# Triggers: push/PR to main, manual dispatch
+# Produces: P6_smoke_linux.log artifact with ExitCode=0
+
+name: Linux Smoke Test
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'installer-unified/**'
+      - '.github/workflows/linux-smoke.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'installer-unified/**'
+  workflow_dispatch:
+    inputs:
+      skip_build:
+        description: 'Skip cargo build (use cached binary)'
+        required: false
+        default: 'false'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  linux-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            installer-unified/src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build release binary
+        if: ${{ github.event.inputs.skip_build != 'true' }}
+        working-directory: installer-unified/src-tauri
+        run: cargo build --release
+
+      - name: Create log directory
+        run: mkdir -p Prod_Wizard_Log
+
+      - name: Run Linux smoke tests
+        working-directory: installer-unified
+        run: |
+          chmod +x tools/smoke-test-unified-installer.sh
+          ./tools/smoke-test-unified-installer.sh 2>&1 | tee ../Prod_Wizard_Log/P6_smoke_linux.log
+          echo "ExitCode=$?" >> ../Prod_Wizard_Log/P6_smoke_linux.log
+
+      - name: Verify smoke test passed
+        run: |
+          if grep -q "ExitCode=0" Prod_Wizard_Log/P6_smoke_linux.log; then
+            echo "✅ Linux smoke tests passed"
+          else
+            echo "❌ Linux smoke tests failed"
+            cat Prod_Wizard_Log/P6_smoke_linux.log
+            exit 1
+          fi
+
+      - name: Upload smoke test log
+        uses: actions/upload-artifact@v4
+        with:
+          name: P6_smoke_linux
+          path: Prod_Wizard_Log/P6_smoke_linux.log
+          retention-days: 30
+
+      - name: Run unit tests
+        working-directory: installer-unified/src-tauri
+        run: |
+          cargo test --lib 2>&1 | tee ../../Prod_Wizard_Log/P6_unit_tests_linux.log
+          echo "ExitCode=$?" >> ../../Prod_Wizard_Log/P6_unit_tests_linux.log
+
+      - name: Upload unit test log
+        uses: actions/upload-artifact@v4
+        with:
+          name: P6_unit_tests_linux
+          path: Prod_Wizard_Log/P6_unit_tests_linux.log
+          retention-days: 30
+

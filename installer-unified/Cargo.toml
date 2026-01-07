@@ -1,0 +1,7 @@
+[workspace]
+# This repo follows Tauri's standard layout: the Rust app lives in `src-tauri/`.
+# Keeping a workspace `Cargo.toml` here prevents accidentally building an obsolete root crate and
+# lets `cargo check` from `installer-unified/` validate the real Tauri crate.
+members = ["src-tauri"]
+resolver = "2"
+

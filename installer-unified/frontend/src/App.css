@@ -1,0 +1,268 @@
+.wizard-root {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+/* Classic wizard window frame */
+.wizard-window {
+  width: 100%;
+  max-width: 900px;
+  min-height: 540px;
+  background: #ffffff;
+  border: 1px solid #c8c8c8;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+}
+
+.wizard-header {
+  padding: 14px 18px;
+  border-bottom: 1px solid #d7d7d7;
+  background: #f8f8f8;
+}
+
+.wizard-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #111;
+}
+
+.wizard-subtitle {
+  margin: 6px 0 0 0;
+  font-size: 13px;
+  color: #333;
+}
+
+.wizard-content {
+  flex: 1;
+  padding: 18px;
+  box-sizing: border-box;
+  background: #ffffff;
+  color: #111;
+}
+
+.wizard-footer {
+  padding: 12px 14px;
+  border-top: 1px solid #d7d7d7;
+  background: #f8f8f8;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.wizard-button {
+  min-width: 88px;
+  padding: 6px 14px;
+  border: 1px solid #8f8f8f;
+  background: #f2f2f2;
+  color: #111;
+  font-size: 13px;
+  border-radius: 2px;
+}
+
+.wizard-button:disabled {
+  color: #777;
+  background: #f2f2f2;
+  border-color: #c0c0c0;
+}
+
+.wizard-button.primary {
+  border-color: #2b579a;
+}
+
+.wizard-row {
+  margin: 10px 0;
+}
+
+.wizard-label {
+  display: block;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.wizard-input,
+.wizard-select,
+.wizard-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid #9f9f9f;
+  font-size: 13px;
+  background: #ffffff;
+  color: #111;
+}
+
+.wizard-inline {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.wizard-help {
+  font-size: 12px;
+  color: #444;
+}
+
+.wizard-error {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #b00020;
+}
+
+.platform-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  margin-top: 12px;
+}
+
+.platform-card {
+  border: 1px solid #bcbcbc;
+  background: #ffffff;
+  padding: 18px;
+  text-align: left;
+  min-height: 140px;
+}
+
+.platform-card:focus {
+  outline: 2px solid #2b579a;
+  outline-offset: 2px;
+}
+
+.platform-card-title {
+  font-weight: 600;
+  margin: 0 0 8px 0;
+}
+
+.platform-card-body {
+  margin: 0;
+  font-size: 13px;
+  color: #333;
+}
+
+.license-box {
+  height: 240px;
+  overflow: auto;
+  border: 1px solid #9f9f9f;
+  background: #ffffff;
+  padding: 10px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+.modal {
+  width: 100%;
+  max-width: 520px;
+  background: #ffffff;
+  border: 1px solid #c8c8c8;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.25);
+}
+
+.modal-header {
+  padding: 12px 14px;
+  border-bottom: 1px solid #d7d7d7;
+  background: #f8f8f8;
+  font-weight: 600;
+}
+
+.modal-body {
+  padding: 14px;
+  font-size: 13px;
+  color: #111;
+  white-space: pre-wrap;
+}
+
+.modal-footer {
+  padding: 12px 14px;
+  border-top: 1px solid #d7d7d7;
+  background: #f8f8f8;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.mapping-layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.mapping-pane {
+  border: 1px solid #bcbcbc;
+  display: flex;
+  flex-direction: column;
+  min-height: 260px;
+}
+
+.mapping-pane-header {
+  padding: 8px 10px;
+  border-bottom: 1px solid #d7d7d7;
+  background: #f8f8f8;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.mapping-pane-search {
+  padding: 8px 10px;
+  border-bottom: 1px solid #e3e3e3;
+}
+
+.mapping-list {
+  flex: 1;
+  overflow: auto;
+}
+
+.mapping-row {
+  padding: 6px 10px;
+  font-size: 13px;
+  border-bottom: 1px solid #f0f0f0;
+  cursor: default;
+}
+
+.mapping-row.selected {
+  background: #dbe9ff;
+}
+
+.mapping-row.mapped {
+  font-weight: 600;
+}
+
+.mapping-preview {
+  margin-top: 12px;
+  border: 1px solid #bcbcbc;
+  background: #f8f8f8;
+  padding: 10px;
+  font-size: 13px;
+}
+
+.progress-bar {
+  width: 100%;
+}
+
+.install-detail-log {
+  margin-top: 10px;
+  padding: 8px;
+  border: 1px solid #bcbcbc;
+  background: #f8f8f8;
+  height: 120px;
+  overflow: auto;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+}
