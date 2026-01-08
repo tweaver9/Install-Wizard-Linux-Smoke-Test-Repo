@@ -1,0 +1,49 @@
+# Phase 9 E2E Verification: Test Database Containers
+# Usage: docker compose -f phase9-docker-compose.yml up -d
+#
+# Postgres: Creates two roles
+#   - p9_admin (CREATEDB) - can create databases
+#   - p9_limited (no CREATEDB) - cannot create databases
+#
+# SQL Server: Creates two logins
+#   - p9_admin (sysadmin) - can create databases
+#   - p9_limited (public only) - cannot create databases
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: phase9_postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: P9_Test_Postgres_2024!
+      POSTGRES_DB: postgres
+    ports:
+      - "15432:5432"
+    volumes:
+      - ./phase9-postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: phase9_sqlserver
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "P9_Test_SqlServer_2024#"
+      MSSQL_PID: "Developer"
+    ports:
+      - "11433:1433"
+    healthcheck:
+      test: /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "P9_Test_SqlServer_2024#" -C -Q "SELECT 1" || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+networks:
+  default:
+    name: phase9_network
+

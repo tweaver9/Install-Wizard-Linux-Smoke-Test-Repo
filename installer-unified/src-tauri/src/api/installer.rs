@@ -628,6 +628,32 @@ impl Default for HotRetentionConfig {
     }
 }
 
+/// Phase 9: SQL Server sizing configuration (optional)
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SqlServerSizingConfigPayload {
+    #[serde(default)]
+    pub initial_data_size_mb: u32,
+    #[serde(default)]
+    pub initial_log_size_mb: u32,
+    #[serde(default)]
+    pub max_data_size_mb: u32,
+    #[serde(default)]
+    pub max_log_size_mb: u32,
+    #[serde(default)]
+    pub data_filegrowth: i32,
+    #[serde(default)]
+    pub log_filegrowth: i32,
+}
+
+/// Phase 9: PostgreSQL options (optional)
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostgresOptionsPayload {
+    #[serde(default)]
+    pub owner: Option<String>,
+}
+
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DbSetupConfig {
@@ -635,6 +661,9 @@ pub struct DbSetupConfig {
     pub mode: String,
 
     // Create NEW branch
+    /// The name of the new database to create (required when mode=create_new)
+    #[serde(default)]
+    pub new_db_name: Option<String>,
     /// "this_machine" | "specific_path"
     pub new_location: String,
     pub new_specific_path: String,
@@ -646,18 +675,29 @@ pub struct DbSetupConfig {
     pub existing_hosted_where: String,
     /// "connection_string" | "details"
     pub existing_connect_mode: String,
+
+    // Phase 9: SQL Server sizing (optional)
+    #[serde(default)]
+    pub sql_server_sizing: Option<SqlServerSizingConfigPayload>,
+
+    // Phase 9: PostgreSQL options (optional)
+    #[serde(default)]
+    pub postgres_options: Option<PostgresOptionsPayload>,
 }
 
 impl Default for DbSetupConfig {
     fn default() -> Self {
         Self {
             mode: "existing".to_string(),
+            new_db_name: None,
             new_location: "this_machine".to_string(),
             new_specific_path: String::new(),
             max_db_size_gb: 0,
             // Default to on-prem/unknown for backwards compatibility with older payloads.
             existing_hosted_where: "on_prem".to_string(),
             existing_connect_mode: "connection_string".to_string(),
+            sql_server_sizing: None,
+            postgres_options: None,
         }
     }
 }
@@ -943,29 +983,256 @@ pub(crate) async fn run_installation(
 
     validate_retention_and_archive_policy(&req).await?;
 
-    // D2 "Create NEW" provisioning is not implemented yet (UI collects sizing/retention/archive fields).
-    // Fail fast with a clean message instead of a confusing empty-connection error.
+    // Phase 9: Database provisioning for "Create NEW" mode
     let db_mode = req.db_setup.mode.trim().to_ascii_lowercase();
-    if db_mode == "create_new" {
+    let (conn, engine, _provisioned_db_name): (DatabaseConnection, String, Option<String>) = if db_mode == "create_new" {
         emit_progress(ProgressPayload {
             correlation_id: correlation_id.clone(),
             step: "db_provision".to_string(),
-            severity: "error".to_string(),
+            severity: "info".to_string(),
             phase: "install".to_string(),
             percent: 5,
-            message: "Create NEW database provisioning is not implemented yet. Please choose Use EXISTING Database.".to_string(),
+            message: "Provisioning new database...".to_string(),
             elapsed_ms: Some(started.elapsed().as_millis()),
             eta_ms: None,
         });
-        anyhow::bail!(
-            "Create NEW database provisioning is not implemented yet. Please choose Use EXISTING Database."
-        );
-    }
 
-    // Connect to config DB
-    let conn_str = req.config_db_connection_string.clone();
-    let engine = guess_engine(&conn_str);
-    let conn = connect_with_retry(engine.clone(), conn_str).await?;
+        // For create_new, we need a master/admin connection string to create the database.
+        // The user must provide this in config_db_connection_string pointing to master/postgres.
+        let master_conn_str = req.config_db_connection_string.clone();
+        if master_conn_str.trim().is_empty() {
+            anyhow::bail!("Admin/maintenance database connection string is required to create a new database. Please provide connection details for master (SQL Server) or postgres (PostgreSQL) database.");
+        }
+
+        let engine = guess_engine(&master_conn_str);
+        let master_conn = connect_with_retry(engine.clone(), master_conn_str.clone()).await?;
+
+        // Get database name from payload (required for create_new)
+        let db_name = req
+            .db_setup
+            .new_db_name
+            .as_ref()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.trim().to_string())
+            .ok_or_else(|| anyhow::anyhow!("New database name is required for Create NEW mode."))?;
+        provisioning::validate_db_name(&db_name).map_err(|e| anyhow::anyhow!("Invalid database name: {}", e))?;
+
+        // Check privileges
+        emit_progress(ProgressPayload {
+            correlation_id: correlation_id.clone(),
+            step: "db_provision".to_string(),
+            severity: "info".to_string(),
+            phase: "install".to_string(),
+            percent: 6,
+            message: "Checking database creation privileges...".to_string(),
+            elapsed_ms: Some(started.elapsed().as_millis()),
+            eta_ms: None,
+        });
+
+        // Actually enforce privilege check
+        match engine.as_str() {
+            "postgres" => {
+                let pool = master_conn
+                    .as_postgres()
+                    .ok_or_else(|| anyhow::anyhow!("Internal error: expected Postgres connection"))?;
+                let priv_query = provisioning::postgres_can_create_db_query();
+                let priv_row = sqlx::query(priv_query)
+                    .fetch_optional(pool)
+                    .await
+                    .context("Failed to check privileges")?;
+                use sqlx::Row;
+                let can_create: bool = priv_row
+                    .as_ref()
+                    .and_then(|r| r.try_get("can_create").ok())
+                    .unwrap_or(false);
+                if !can_create {
+                    anyhow::bail!("Cannot create database: role lacks CREATEDB privilege.");
+                }
+                info!("[PHASE: provisioning] PostgreSQL privilege check passed");
+            }
+            _ => {
+                // SQL Server
+                let client_arc = master_conn
+                    .as_sql_server()
+                    .ok_or_else(|| anyhow::anyhow!("Internal error: expected SQL Server connection"))?;
+                let mut client = client_arc.lock().await;
+                let priv_query = provisioning::sql_server_can_create_db_query();
+                let priv_stream = client
+                    .simple_query(priv_query)
+                    .await
+                    .context("Failed to check privileges")?;
+                let priv_rows: Vec<_> = priv_stream
+                    .into_first_result()
+                    .await
+                    .context("Failed to check privileges")?;
+                let can_create: i32 = priv_rows
+                    .first()
+                    .and_then(|r| r.get("can_create"))
+                    .unwrap_or(0);
+                if can_create != 1 {
+                    anyhow::bail!("Cannot create database: missing dbcreator/sysadmin role or CREATE ANY DATABASE permission.");
+                }
+                info!("[PHASE: provisioning] SQL Server privilege check passed");
+                drop(client); // Release lock before next steps
+            }
+        }
+
+        // Create the database
+        emit_progress(ProgressPayload {
+            correlation_id: correlation_id.clone(),
+            step: "db_provision".to_string(),
+            severity: "info".to_string(),
+            phase: "install".to_string(),
+            percent: 7,
+            message: format!("Creating database '{}'...", db_name),
+            elapsed_ms: Some(started.elapsed().as_millis()),
+            eta_ms: None,
+        });
+
+        match engine.as_str() {
+            "postgres" => {
+                let pool = master_conn
+                    .as_postgres()
+                    .ok_or_else(|| anyhow::anyhow!("Internal error: expected Postgres connection"))?;
+
+                // Check if DB already exists
+                let exists_query = provisioning::postgres_db_exists_query(&db_name);
+                let row = sqlx::query(&exists_query)
+                    .fetch_one(pool)
+                    .await
+                    .context("Failed to check if database exists")?;
+                use sqlx::Row;
+                let exists: bool = row.try_get("db_exists").unwrap_or(false);
+
+                if exists {
+                    anyhow::bail!("Database already exists: {}", db_name);
+                }
+
+                let owner = req.db_setup.postgres_options.as_ref().and_then(|o| o.owner.as_deref());
+                let create_stmt = provisioning::postgres_create_db_stmt(&db_name, owner);
+                sqlx::query(&create_stmt)
+                    .execute(pool)
+                    .await
+                    .context("CREATE DATABASE failed")?;
+                info!("[PHASE: provisioning] PostgreSQL database '{}' created", db_name);
+            }
+            _ => {
+                // SQL Server
+                let client_arc = master_conn
+                    .as_sql_server()
+                    .ok_or_else(|| anyhow::anyhow!("Internal error: expected SQL Server connection"))?;
+                let mut client = client_arc.lock().await;
+
+                // Check if DB already exists
+                let exists_query = provisioning::sql_server_db_exists_query(&db_name);
+                let stream = client
+                    .simple_query(&exists_query)
+                    .await
+                    .context("Failed to check if database exists")?;
+                let rows: Vec<_> = stream
+                    .into_first_result()
+                    .await
+                    .context("Failed to check if database exists")?;
+                let exists = rows
+                    .first()
+                    .and_then(|r| r.get::<i32, _>("db_exists"))
+                    .map(|v| v == 1)
+                    .unwrap_or(false);
+
+                if exists {
+                    anyhow::bail!("Database already exists: {}", db_name);
+                }
+
+                let create_stmt = provisioning::sql_server_create_db_stmt(&db_name);
+                client
+                    .simple_query(&create_stmt)
+                    .await
+                    .context("CREATE DATABASE failed")?
+                    .into_results()
+                    .await
+                    .context("CREATE DATABASE failed")?;
+                info!("[PHASE: provisioning] SQL Server database '{}' created", db_name);
+
+                // Apply sizing if provided
+                if let Some(ref sizing) = req.db_setup.sql_server_sizing {
+                    if sizing.initial_data_size_mb > 0
+                        || sizing.max_data_size_mb > 0
+                        || sizing.data_filegrowth != 0
+                        || sizing.initial_log_size_mb > 0
+                        || sizing.max_log_size_mb > 0
+                        || sizing.log_filegrowth != 0
+                    {
+                        // Get logical file names - collect into owned data first
+                        let files_query = provisioning::sql_server_get_file_names_query(&db_name);
+                        let file_info: Vec<(String, String)> = {
+                            let mut collected = Vec::new();
+                            if let Ok(stream) = client.simple_query(&files_query).await {
+                                if let Ok(file_rows) = stream.into_first_result().await {
+                                    for row in file_rows {
+                                        let name: String = row.get::<&str, _>("name").unwrap_or("").to_string();
+                                        let type_desc: String = row.get::<&str, _>("type_desc").unwrap_or("").to_string();
+                                        if !name.is_empty() {
+                                            collected.push((name, type_desc));
+                                        }
+                                    }
+                                }
+                            }
+                            collected
+                        };
+
+                        // Now apply ALTER statements
+                        for (name, type_desc) in file_info {
+                            let alter_stmt = if type_desc == "ROWS" {
+                                provisioning::sql_server_alter_file_stmt(
+                                    &db_name,
+                                    &name,
+                                    sizing.initial_data_size_mb,
+                                    sizing.max_data_size_mb,
+                                    sizing.data_filegrowth,
+                                )
+                            } else if type_desc == "LOG" {
+                                provisioning::sql_server_alter_file_stmt(
+                                    &db_name,
+                                    &name,
+                                    sizing.initial_log_size_mb,
+                                    sizing.max_log_size_mb,
+                                    sizing.log_filegrowth,
+                                )
+                            } else {
+                                continue;
+                            };
+
+                            if let Err(e) = client.simple_query(&alter_stmt).await {
+                                warn!("[PHASE: provisioning] ALTER FILE failed (non-fatal): {:?}", e);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        emit_progress(ProgressPayload {
+            correlation_id: correlation_id.clone(),
+            step: "db_provision".to_string(),
+            severity: "info".to_string(),
+            phase: "install".to_string(),
+            percent: 9,
+            message: format!("Database '{}' ready. Connecting...", db_name),
+            elapsed_ms: Some(started.elapsed().as_millis()),
+            eta_ms: None,
+        });
+
+        // Now connect to the newly created database for migrations
+        let new_db_conn_str = build_connection_string_for_db(&master_conn_str, &db_name, &engine);
+        let conn = connect_with_retry(engine.clone(), new_db_conn_str).await?;
+        (conn, engine, Some(db_name.to_string()))
+    } else {
+        // Existing DB mode: use the provided connection string
+        let conn_str = req.config_db_connection_string.clone();
+        let engine = guess_engine(&conn_str);
+        let conn = connect_with_retry(engine.clone(), conn_str).await?;
+        (conn, engine, None)
+    };
     let engine_version = detect_engine_version(engine.clone(), conn.clone())
         .await
         .unwrap_or_else(|_| {
@@ -2815,6 +3082,60 @@ fn guess_engine(conn_str: &str) -> String {
     }
 }
 
+/// Phase 9: Build a connection string pointing to a specific database.
+/// For Postgres: replaces the database in the URL path.
+/// For SQL Server: replaces or adds Database= parameter.
+fn build_connection_string_for_db(master_conn_str: &str, db_name: &str, engine: &str) -> String {
+    if engine == "postgres" {
+        // Postgres URL format: postgres://user:pass@host:port/dbname?params
+        // Replace the database name in the path
+        if let Ok(mut url) = url::Url::parse(master_conn_str) {
+            url.set_path(&format!("/{}", db_name));
+            return url.to_string();
+        }
+        // Fallback: key=value format
+        let parts: Vec<&str> = master_conn_str.split_whitespace().collect();
+        let mut found = false;
+        let mut result = String::new();
+        for part in &parts {
+            if part.to_lowercase().starts_with("dbname=") {
+                result.push_str(&format!("dbname={} ", db_name));
+                found = true;
+            } else {
+                result.push_str(part);
+                result.push(' ');
+            }
+        }
+        if !found {
+            result.push_str(&format!("dbname={}", db_name));
+        }
+        result.trim().to_string()
+    } else {
+        // SQL Server: key=value; format
+        // Replace Database= or Initial Catalog=
+        let mut result = String::new();
+        let mut found = false;
+        for part in master_conn_str.split(';') {
+            let trimmed = part.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let lower_part = trimmed.to_lowercase();
+            if lower_part.starts_with("database=") || lower_part.starts_with("initial catalog=") {
+                result.push_str(&format!("Database={};", db_name));
+                found = true;
+            } else {
+                result.push_str(trimmed);
+                result.push(';');
+            }
+        }
+        if !found {
+            result.push_str(&format!("Database={};", db_name));
+        }
+        result
+    }
+}
+
 async fn connect_with_retry(engine: String, conn_str: String) -> Result<DatabaseConnection> {
     let engine = normalize_engine(&engine);
     let attempt = || async {
@@ -2947,11 +3268,14 @@ pub async fn db_setup_smoke(_secrets: Arc<SecretProtector>) -> Result<()> {
     // Demonstrate required fields validation
     let new_db_req_invalid = DbSetupConfig {
         mode: "create_new".to_string(),
+        new_db_name: None, // Invalid: must be provided for create_new
         new_location: "this_machine".to_string(),
         new_specific_path: String::new(),
         max_db_size_gb: 0, // Invalid: must be > 0
         existing_hosted_where: String::new(),
         existing_connect_mode: String::new(),
+        sql_server_sizing: None,
+        postgres_options: None,
     };
     push(
         &mut transcript,
@@ -2969,11 +3293,14 @@ pub async fn db_setup_smoke(_secrets: Arc<SecretProtector>) -> Result<()> {
     // Valid Create NEW request
     let new_db_req_valid = DbSetupConfig {
         mode: "create_new".to_string(),
+        new_db_name: Some("CADalytix_Production".to_string()),
         new_location: "specific_path".to_string(),
         new_specific_path: "D:\\CADalytixData".to_string(),
         max_db_size_gb: 50,
         existing_hosted_where: String::new(),
         existing_connect_mode: String::new(),
+        sql_server_sizing: None,
+        postgres_options: None,
     };
     push(
         &mut transcript,
@@ -2986,10 +3313,10 @@ pub async fn db_setup_smoke(_secrets: Arc<SecretProtector>) -> Result<()> {
         ),
     );
 
-    // Simulate the fail-fast provisioning message
+    // Phase 9: Create NEW provisioning is now implemented
     push(
         &mut transcript,
-        "provisioning_status=\"Create NEW database provisioning is not implemented yet. Please choose Use EXISTING Database.\"",
+        "provisioning_status=\"Create NEW database provisioning is now implemented.\"",
     );
 
     // -------------------------------------------------------------------------
@@ -3029,11 +3356,14 @@ pub async fn db_setup_smoke(_secrets: Arc<SecretProtector>) -> Result<()> {
     // Demonstrate missing fields validation
     let existing_db_missing = DbSetupConfig {
         mode: "existing".to_string(),
+        new_db_name: None,
         new_location: String::new(),
         new_specific_path: String::new(),
         max_db_size_gb: 0,
         existing_hosted_where: String::new(), // Missing
         existing_connect_mode: "details".to_string(),
+        sql_server_sizing: None,
+        postgres_options: None,
     };
     push(
         &mut transcript,
@@ -3049,11 +3379,14 @@ pub async fn db_setup_smoke(_secrets: Arc<SecretProtector>) -> Result<()> {
     // Valid EXISTING request
     let existing_db_valid = DbSetupConfig {
         mode: "existing".to_string(),
+        new_db_name: None,
         new_location: String::new(),
         new_specific_path: String::new(),
         max_db_size_gb: 0,
         existing_hosted_where: "on_prem".to_string(),
         existing_connect_mode: "details".to_string(),
+        sql_server_sizing: None,
+        postgres_options: None,
     };
     push(
         &mut transcript,
@@ -3140,6 +3473,420 @@ pub async fn db_setup_smoke(_secrets: Arc<SecretProtector>) -> Result<()> {
 }
 
 // =============================================================================
+// Phase 9: Database Provisioning Commands
+// =============================================================================
+
+use crate::database::provisioning::{
+    self, CanCreateDatabaseResult, CreateDatabaseResult, DatabaseExistsResult,
+    PostgresCreateOptions, SqlServerSizingConfig,
+};
+
+/// Request payload for db_can_create_database
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbCanCreateRequest {
+    pub engine: String, // "sqlserver" | "postgres"
+    pub connection_string: String,
+}
+
+/// Check if the current user has privileges to create a new database.
+#[tauri::command]
+pub async fn db_can_create_database(
+    payload: Option<DbCanCreateRequest>,
+) -> Result<CanCreateDatabaseResult, String> {
+    info!("[PHASE: provisioning] [STEP: can_create] db_can_create_database requested");
+    let Some(req) = payload else {
+        return Ok(CanCreateDatabaseResult {
+            can_create: false,
+            reason: "Invalid request.".to_string(),
+            detected_role: None,
+        });
+    };
+    if req.connection_string.trim().is_empty() {
+        return Ok(CanCreateDatabaseResult {
+            can_create: false,
+            reason: "Connection string is required.".to_string(),
+            detected_role: None,
+        });
+    }
+
+    let engine = normalize_engine(&req.engine);
+    let masked = mask_connection_string(&req.connection_string);
+    info!(
+        "[PHASE: provisioning] [STEP: can_create] Checking privileges (engine={}, masked_conn_str={})",
+        engine, masked
+    );
+
+    // Connect to master/postgres database to check privileges
+    let conn = match connect_with_retry(engine.clone(), req.connection_string.clone()).await {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(
+                "[PHASE: provisioning] [STEP: can_create] Connection failed: {:?}",
+                e
+            );
+            return Ok(CanCreateDatabaseResult {
+                can_create: false,
+                reason: "Unable to connect. Verify host, credentials, and network access."
+                    .to_string(),
+                detected_role: None,
+            });
+        }
+    };
+
+    match engine.as_str() {
+        "postgres" => {
+            let pool = conn
+                .as_postgres()
+                .ok_or_else(|| "Internal error: expected Postgres connection".to_string())?;
+            let query = provisioning::postgres_can_create_db_query();
+            let row = sqlx::query(query)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| format!("Query failed: {:?}", e))?;
+            match row {
+                Some(r) => {
+                    use sqlx::Row;
+                    let can_create: bool = r.try_get("can_create").unwrap_or(false);
+                    let role: String = r.try_get("detected_role").unwrap_or_default();
+                    Ok(CanCreateDatabaseResult {
+                        can_create,
+                        reason: if can_create {
+                            "User has CREATEDB privilege.".to_string()
+                        } else {
+                            "User does not have CREATEDB privilege.".to_string()
+                        },
+                        detected_role: Some(role),
+                    })
+                }
+                None => Ok(CanCreateDatabaseResult {
+                    can_create: false,
+                    reason: "Could not determine user privileges.".to_string(),
+                    detected_role: None,
+                }),
+            }
+        }
+        _ => {
+            // SQL Server
+            let client_arc = conn
+                .as_sql_server()
+                .ok_or_else(|| "Internal error: expected SQL Server connection".to_string())?;
+            let mut client = client_arc.lock().await;
+            let query = provisioning::sql_server_can_create_db_query();
+            let stream = client
+                .simple_query(query)
+                .await
+                .map_err(|e| format!("Query failed: {:?}", e))?;
+            let rows: Vec<_> = stream
+                .into_first_result()
+                .await
+                .map_err(|e| format!("Query failed: {:?}", e))?;
+            if let Some(row) = rows.first() {
+                let can_create: i32 = row.get("can_create").unwrap_or(0);
+                let role: &str = row.get("detected_role").unwrap_or("none");
+                Ok(CanCreateDatabaseResult {
+                    can_create: can_create == 1,
+                    reason: if can_create == 1 {
+                        format!("User has {} role/permission.", role)
+                    } else {
+                        "User does not have CREATE DATABASE permission.".to_string()
+                    },
+                    detected_role: Some(role.to_string()),
+                })
+            } else {
+                Ok(CanCreateDatabaseResult {
+                    can_create: false,
+                    reason: "Could not determine user privileges.".to_string(),
+                    detected_role: None,
+                })
+            }
+        }
+    }
+}
+
+/// Request payload for db_exists
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbExistsRequest {
+    pub engine: String,
+    pub connection_string: String,
+    pub db_name: String,
+}
+
+/// Check if a database with the given name already exists.
+#[tauri::command]
+pub async fn db_exists(payload: Option<DbExistsRequest>) -> Result<DatabaseExistsResult, String> {
+    info!("[PHASE: provisioning] [STEP: db_exists] db_exists requested");
+    let Some(req) = payload else {
+        return Err("Invalid request.".to_string());
+    };
+    if req.db_name.trim().is_empty() {
+        return Err("Database name is required.".to_string());
+    }
+    provisioning::validate_db_name(&req.db_name).map_err(|e| e)?;
+
+    let engine = normalize_engine(&req.engine);
+    let conn = connect_with_retry(engine.clone(), req.connection_string.clone())
+        .await
+        .map_err(|e| format!("Connection failed: {:?}", e))?;
+
+    match engine.as_str() {
+        "postgres" => {
+            let pool = conn
+                .as_postgres()
+                .ok_or_else(|| "Internal error: expected Postgres connection".to_string())?;
+            let query = provisioning::postgres_db_exists_query(&req.db_name);
+            let row = sqlx::query(&query)
+                .fetch_one(pool)
+                .await
+                .map_err(|e| format!("Query failed: {:?}", e))?;
+            use sqlx::Row;
+            let exists: bool = row.try_get("db_exists").unwrap_or(false);
+            Ok(DatabaseExistsResult {
+                exists,
+                db_name: req.db_name,
+            })
+        }
+        _ => {
+            let client_arc = conn
+                .as_sql_server()
+                .ok_or_else(|| "Internal error: expected SQL Server connection".to_string())?;
+            let mut client = client_arc.lock().await;
+            let query = provisioning::sql_server_db_exists_query(&req.db_name);
+            let stream = client
+                .simple_query(&query)
+                .await
+                .map_err(|e| format!("Query failed: {:?}", e))?;
+            let rows: Vec<_> = stream
+                .into_first_result()
+                .await
+                .map_err(|e| format!("Query failed: {:?}", e))?;
+            let exists = rows
+                .first()
+                .and_then(|r| r.get::<i32, _>("db_exists"))
+                .map(|v| v == 1)
+                .unwrap_or(false);
+            Ok(DatabaseExistsResult {
+                exists,
+                db_name: req.db_name,
+            })
+        }
+    }
+}
+
+/// Request payload for db_create_database
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbCreateRequest {
+    pub engine: String,
+    pub connection_string: String,
+    pub db_name: String,
+    /// SQL Server sizing (optional; ignored for Postgres)
+    #[serde(default)]
+    pub sizing: Option<SqlServerSizingConfig>,
+    /// PostgreSQL owner (optional)
+    #[serde(default)]
+    pub postgres_options: Option<PostgresCreateOptions>,
+}
+
+/// Create a new database. For SQL Server, optionally applies sizing via ALTER DATABASE.
+#[tauri::command]
+pub async fn db_create_database(
+    payload: Option<DbCreateRequest>,
+) -> Result<CreateDatabaseResult, String> {
+    info!("[PHASE: provisioning] [STEP: create_db] db_create_database requested");
+    let Some(req) = payload else {
+        return Err("Invalid request.".to_string());
+    };
+    let db_name = req.db_name.trim();
+    if db_name.is_empty() {
+        return Err("Database name is required.".to_string());
+    }
+    provisioning::validate_db_name(db_name).map_err(|e| e)?;
+
+    let engine = normalize_engine(&req.engine);
+    let masked = mask_connection_string(&req.connection_string);
+    info!(
+        "[PHASE: provisioning] [STEP: create_db] Creating database (engine={}, db_name={}, masked_conn_str={})",
+        engine, db_name, masked
+    );
+
+    // Validate sizing config if provided (SQL Server only)
+    if engine == "sqlserver" {
+        if let Some(ref sizing) = req.sizing {
+            provisioning::validate_sizing_config(sizing).map_err(|e| e)?;
+        }
+    }
+
+    let conn = connect_with_retry(engine.clone(), req.connection_string.clone())
+        .await
+        .map_err(|e| format!("Connection failed: {:?}", e))?;
+
+    match engine.as_str() {
+        "postgres" => {
+            let pool = conn
+                .as_postgres()
+                .ok_or_else(|| "Internal error: expected Postgres connection".to_string())?;
+
+            // Check if DB already exists
+            let exists_query = provisioning::postgres_db_exists_query(db_name);
+            let row = sqlx::query(&exists_query)
+                .fetch_one(pool)
+                .await
+                .map_err(|e| format!("Query failed: {:?}", e))?;
+            use sqlx::Row;
+            let exists: bool = row.try_get("db_exists").unwrap_or(false);
+            if exists {
+                return Ok(CreateDatabaseResult {
+                    created: false,
+                    db_name: db_name.to_string(),
+                    message: format!("Database '{}' already exists.", db_name),
+                    sizing_applied: None,
+                });
+            }
+
+            // Create database
+            let owner = req.postgres_options.as_ref().and_then(|o| o.owner.as_deref());
+            let create_stmt = provisioning::postgres_create_db_stmt(db_name, owner);
+            sqlx::query(&create_stmt)
+                .execute(pool)
+                .await
+                .map_err(|e| format!("CREATE DATABASE failed: {:?}", e))?;
+
+            info!(
+                "[PHASE: provisioning] [STEP: create_db] PostgreSQL database '{}' created successfully",
+                db_name
+            );
+            Ok(CreateDatabaseResult {
+                created: true,
+                db_name: db_name.to_string(),
+                message: format!("Database '{}' created successfully.", db_name),
+                sizing_applied: None, // PostgreSQL does not support sizing
+            })
+        }
+        _ => {
+            // SQL Server
+            let client_arc = conn
+                .as_sql_server()
+                .ok_or_else(|| "Internal error: expected SQL Server connection".to_string())?;
+            let mut client = client_arc.lock().await;
+
+            // Check if DB already exists
+            let exists_query = provisioning::sql_server_db_exists_query(db_name);
+            let stream = client
+                .simple_query(&exists_query)
+                .await
+                .map_err(|e| format!("Query failed: {:?}", e))?;
+            let rows: Vec<_> = stream
+                .into_first_result()
+                .await
+                .map_err(|e| format!("Query failed: {:?}", e))?;
+            let exists = rows
+                .first()
+                .and_then(|r| r.get::<i32, _>("db_exists"))
+                .map(|v| v == 1)
+                .unwrap_or(false);
+            if exists {
+                return Ok(CreateDatabaseResult {
+                    created: false,
+                    db_name: db_name.to_string(),
+                    message: format!("Database '{}' already exists.", db_name),
+                    sizing_applied: None,
+                });
+            }
+
+            // Create database
+            let create_stmt = provisioning::sql_server_create_db_stmt(db_name);
+            client
+                .simple_query(&create_stmt)
+                .await
+                .map_err(|e| format!("CREATE DATABASE failed: {:?}", e))?
+                .into_results()
+                .await
+                .map_err(|e| format!("CREATE DATABASE failed: {:?}", e))?;
+
+            info!(
+                "[PHASE: provisioning] [STEP: create_db] SQL Server database '{}' created",
+                db_name
+            );
+
+            // Apply sizing if provided
+            let mut sizing_applied = false;
+            if let Some(ref sizing) = req.sizing {
+                if sizing.initial_data_size_mb > 0
+                    || sizing.max_data_size_mb > 0
+                    || sizing.data_filegrowth != 0
+                    || sizing.initial_log_size_mb > 0
+                    || sizing.max_log_size_mb > 0
+                    || sizing.log_filegrowth != 0
+                {
+                    // Get logical file names
+                    let files_query = provisioning::sql_server_get_file_names_query(db_name);
+                    let stream = client
+                        .simple_query(&files_query)
+                        .await
+                        .map_err(|e| format!("Failed to get file names: {:?}", e))?;
+                    let file_rows: Vec<_> = stream
+                        .into_first_result()
+                        .await
+                        .map_err(|e| format!("Failed to get file names: {:?}", e))?;
+
+                    for row in file_rows {
+                        let name: &str = row.get("name").unwrap_or("");
+                        let type_desc: &str = row.get("type_desc").unwrap_or("");
+                        if name.is_empty() {
+                            continue;
+                        }
+
+                        let alter_stmt = if type_desc == "ROWS" {
+                            // Data file
+                            provisioning::sql_server_alter_file_stmt(
+                                db_name,
+                                name,
+                                sizing.initial_data_size_mb,
+                                sizing.max_data_size_mb,
+                                sizing.data_filegrowth,
+                            )
+                        } else if type_desc == "LOG" {
+                            // Log file
+                            provisioning::sql_server_alter_file_stmt(
+                                db_name,
+                                name,
+                                sizing.initial_log_size_mb,
+                                sizing.max_log_size_mb,
+                                sizing.log_filegrowth,
+                            )
+                        } else {
+                            continue;
+                        };
+
+                        if let Err(e) = client.simple_query(&alter_stmt).await {
+                            warn!(
+                                "[PHASE: provisioning] [STEP: create_db] ALTER FILE failed (non-fatal): {:?}",
+                                e
+                            );
+                        } else {
+                            sizing_applied = true;
+                        }
+                    }
+                }
+            }
+
+            info!(
+                "[PHASE: provisioning] [STEP: create_db] SQL Server database '{}' created successfully (sizing_applied={})",
+                db_name, sizing_applied
+            );
+            Ok(CreateDatabaseResult {
+                created: true,
+                db_name: db_name.to_string(),
+                message: format!("Database '{}' created successfully.", db_name),
+                sizing_applied: Some(sizing_applied),
+            })
+        }
+    }
+}
+
+// =============================================================================
 // Phase 6 Unit Tests: D2 Validation + Terminal Contract
 // =============================================================================
 #[cfg(test)]
@@ -3154,11 +3901,14 @@ mod tests {
     fn db_setup_create_new_requires_max_db_size() {
         let cfg = DbSetupConfig {
             mode: "create_new".to_string(),
+            new_db_name: Some("CADalytix".to_string()),
             new_location: "this_machine".to_string(),
             new_specific_path: String::new(),
             max_db_size_gb: 0, // Invalid
             existing_hosted_where: String::new(),
             existing_connect_mode: String::new(),
+            sql_server_sizing: None,
+            postgres_options: None,
         };
         let result = cfg.validate();
         assert!(result.is_err(), "Should fail when max_db_size_gb=0");
@@ -3172,11 +3922,14 @@ mod tests {
     fn db_setup_create_new_specific_path_requires_path() {
         let cfg = DbSetupConfig {
             mode: "create_new".to_string(),
+            new_db_name: Some("CADalytix".to_string()),
             new_location: "specific_path".to_string(),
             new_specific_path: String::new(), // Invalid: empty path
             max_db_size_gb: 50,
             existing_hosted_where: String::new(),
             existing_connect_mode: String::new(),
+            sql_server_sizing: None,
+            postgres_options: None,
         };
         let result = cfg.validate();
         assert!(
@@ -3193,11 +3946,14 @@ mod tests {
     fn db_setup_create_new_this_machine_valid() {
         let cfg = DbSetupConfig {
             mode: "create_new".to_string(),
+            new_db_name: Some("CADalytix".to_string()),
             new_location: "this_machine".to_string(),
             new_specific_path: String::new(), // OK for this_machine
             max_db_size_gb: 50,
             existing_hosted_where: String::new(),
             existing_connect_mode: String::new(),
+            sql_server_sizing: None,
+            postgres_options: None,
         };
         let result = cfg.validate();
         assert!(
@@ -3210,11 +3966,14 @@ mod tests {
     fn db_setup_existing_requires_hosted_where() {
         let cfg = DbSetupConfig {
             mode: "existing".to_string(),
+            new_db_name: None,
             new_location: String::new(),
             new_specific_path: String::new(),
             max_db_size_gb: 0,
             existing_hosted_where: String::new(), // Invalid
             existing_connect_mode: "connection_string".to_string(),
+            sql_server_sizing: None,
+            postgres_options: None,
         };
         let result = cfg.validate();
         assert!(
@@ -3231,11 +3990,14 @@ mod tests {
     fn db_setup_existing_valid() {
         let cfg = DbSetupConfig {
             mode: "existing".to_string(),
+            new_db_name: None,
             new_location: String::new(),
             new_specific_path: String::new(),
             max_db_size_gb: 0,
             existing_hosted_where: "on_prem".to_string(),
             existing_connect_mode: "connection_string".to_string(),
+            sql_server_sizing: None,
+            postgres_options: None,
         };
         let result = cfg.validate();
         assert!(

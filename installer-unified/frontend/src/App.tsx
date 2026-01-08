@@ -222,9 +222,27 @@ export default function App() {
   // Database setup
   // D2 Database Setup Wizard (New vs Existing)
   const [dbSetupMode, setDbSetupMode] = useState<'createNew' | 'existing' | null>(null);
+  // Phase 9: Create NEW - database name and admin connection fields
+  const [newDbName, setNewDbName] = useState('CADalytix_Production');
+  const [newDbAdminHost, setNewDbAdminHost] = useState('localhost');
+  const [newDbAdminPort, setNewDbAdminPort] = useState('1433');
+  const [newDbAdminUser, setNewDbAdminUser] = useState('sa');
+  const [newDbAdminPassword, setNewDbAdminPassword] = useState('');
   const [newDbLocation, setNewDbLocation] = useState<'thisMachine' | 'specificPath'>('thisMachine');
   const [newDbSpecificPath, setNewDbSpecificPath] = useState('');
   const [newDbMaxSizeGb, setNewDbMaxSizeGb] = useState('50');
+  // Phase 9: SQL Server sizing fields
+  const [newDbInitialDataSizeMb, setNewDbInitialDataSizeMb] = useState('100');
+  const [newDbInitialLogSizeMb, setNewDbInitialLogSizeMb] = useState('50');
+  const [newDbMaxDataSizeMb, setNewDbMaxDataSizeMb] = useState('0'); // 0 = UNLIMITED
+  const [newDbMaxLogSizeMb, setNewDbMaxLogSizeMb] = useState('0');
+  const [newDbDataFilegrowth, setNewDbDataFilegrowth] = useState('64'); // MB
+  const [newDbLogFilegrowth, setNewDbLogFilegrowth] = useState('-10'); // -10 = 10%
+  // Phase 9: PostgreSQL owner field
+  const [newDbPgOwner, setNewDbPgOwner] = useState('');
+  // Phase 9: Create NEW - privilege test state
+  const [newDbPrivTestStatus, setNewDbPrivTestStatus] = useState<'idle' | 'testing' | 'success' | 'fail'>('idle');
+  const [newDbPrivTestMessage, setNewDbPrivTestMessage] = useState('');
   const [existingHostedWhere, setExistingHostedWhere] = useState<
     'on_prem' | 'aws_rds' | 'azure_sql' | 'gcp_cloud_sql' | 'neon' | 'supabase' | 'other'
   >('on_prem');
@@ -303,6 +321,15 @@ export default function App() {
       return 'sqlserver';
     };
 
+    // Create NEW path: infer from admin port
+    if (dbSetupMode === 'createNew') {
+      const port = newDbAdminPort.trim();
+      if (port === '5432') return 'postgres';
+      if (port === '1433') return 'sqlserver';
+      // Fallback based on install mode
+      return installMode === 'windows' ? 'sqlserver' : 'postgres';
+    }
+
     // Existing DB path: infer from explicit hosting selection when available.
     if (dbSetupMode === 'existing') {
       if (dbUseConnString && dbConnString.trim()) {
@@ -318,7 +345,7 @@ export default function App() {
 
     // Fallback: prior behavior based on install mode.
     return installMode === 'windows' ? 'sqlserver' : 'postgres';
-  }, [dbConnString, dbPort, dbSetupMode, dbUseConnString, existingHostedWhere, installMode]);
+  }, [dbConnString, dbPort, dbSetupMode, dbUseConnString, existingHostedWhere, installMode, newDbAdminPort]);
 
   const computedConfigDbConnectionString = useMemo(() => {
     if (dbUseConnString && dbConnString.trim()) return dbConnString.trim();
@@ -354,13 +381,43 @@ export default function App() {
     return `Server=${server};Database=${db};User Id=${user};Password=${pass};TrustServerCertificate=true;Encrypt=false;`;
   }, [callDataDbName, callDataHost, callDataPassword, callDataPort, callDataUser]);
 
+  // Phase 9: Compute maintenance/admin connection string for Create NEW mode
+  // Points to master (SQL Server) or postgres (PostgreSQL) database
+  const computedCreateNewMaintenanceConnString = useMemo(() => {
+    if (dbEngine === 'postgres') {
+      const port = newDbAdminPort.trim() || '5432';
+      const user = encodeURIComponent(newDbAdminUser.trim());
+      const pass = encodeURIComponent(newDbAdminPassword);
+      const host = newDbAdminHost.trim() || 'localhost';
+      // Connect to postgres maintenance database
+      return `postgresql://${user}:${pass}@${host}:${port}/postgres?sslmode=prefer`;
+    }
+    // SQL Server: connect to master database
+    const host = newDbAdminHost.trim() || 'localhost';
+    const port = newDbAdminPort.trim() || '1433';
+    const server = port ? `${host},${port}` : host;
+    const user = newDbAdminUser.trim();
+    const pass = newDbAdminPassword;
+    return `Server=${server};Database=master;User Id=${user};Password=${pass};TrustServerCertificate=true;Encrypt=false;`;
+  }, [dbEngine, newDbAdminHost, newDbAdminPassword, newDbAdminPort, newDbAdminUser]);
+
   const dbCreateValidationError = useMemo(() => {
     if (dbSetupMode !== 'createNew') return null;
+    // Validate database name
+    if (!newDbName.trim()) return 'New database name is required.';
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(newDbName.trim())) return 'Database name must start with letter/underscore and contain only letters, digits, underscores.';
+    if (newDbName.trim().length > 128) return 'Database name too long (max 128 characters).';
+    // Validate admin connection fields
+    if (!newDbAdminHost.trim()) return 'Admin host is required.';
+    if (!newDbAdminPort.trim()) return 'Admin port is required.';
+    if (!newDbAdminUser.trim()) return 'Admin username is required.';
+    if (!newDbAdminPassword.trim()) return 'Admin password is required.';
+    // Validate sizing
     const gb = parseInt(newDbMaxSizeGb.trim(), 10);
     if (!Number.isFinite(gb) || gb <= 0) return 'Max DB size must be a positive number.';
     if (newDbLocation === 'specificPath' && !newDbSpecificPath.trim()) return 'Database path is required.';
     return null;
-  }, [dbSetupMode, newDbLocation, newDbMaxSizeGb, newDbSpecificPath]);
+  }, [dbSetupMode, newDbLocation, newDbMaxSizeGb, newDbSpecificPath, newDbName, newDbAdminHost, newDbAdminPort, newDbAdminUser, newDbAdminPassword]);
 
   const dbExistingMissingInputs = useMemo(() => {
     if (dbSetupMode !== 'existing') return [] as string[];
@@ -841,16 +898,32 @@ export default function App() {
             installMode,
             installationType,
             destinationFolder,
-            configDbConnectionString: dbSetupMode === 'createNew' ? '' : computedConfigDbConnectionString,
+            // Phase 9: For Create NEW, send maintenance connection string (master/postgres)
+            configDbConnectionString: dbSetupMode === 'createNew' ? computedCreateNewMaintenanceConnString : computedConfigDbConnectionString,
             callDataConnectionString: computedCallDataConnectionString,
             sourceObjectName,
             dbSetup: {
               mode: dbSetupMode === 'createNew' ? 'create_new' : 'existing',
+              // Phase 9: Include new database name for Create NEW mode
+              newDbName: dbSetupMode === 'createNew' ? newDbName.trim() : undefined,
               newLocation: newDbLocation === 'thisMachine' ? 'this_machine' : 'specific_path',
               newSpecificPath: newDbLocation === 'specificPath' ? newDbSpecificPath.trim() : '',
               maxDbSizeGb: parseInt(newDbMaxSizeGb.trim(), 10) || 0,
               existingHostedWhere,
               existingConnectMode: dbUseConnString ? 'connection_string' : 'details',
+              // Phase 9: SQL Server sizing
+              sqlServerSizing: dbEngine === 'sqlserver' && dbSetupMode === 'createNew' ? {
+                initialDataSizeMb: parseInt(newDbInitialDataSizeMb.trim(), 10) || 0,
+                initialLogSizeMb: parseInt(newDbInitialLogSizeMb.trim(), 10) || 0,
+                maxDataSizeMb: parseInt(newDbMaxDataSizeMb.trim(), 10) || 0,
+                maxLogSizeMb: parseInt(newDbMaxLogSizeMb.trim(), 10) || 0,
+                dataFilegrowth: parseInt(newDbDataFilegrowth.trim(), 10) || 0,
+                logFilegrowth: parseInt(newDbLogFilegrowth.trim(), 10) || 0,
+              } : undefined,
+              // Phase 9: PostgreSQL options
+              postgresOptions: dbEngine === 'postgres' && dbSetupMode === 'createNew' ? {
+                owner: newDbPgOwner.trim() || undefined,
+              } : undefined,
             },
             storage: {
               mode: storageMode,
@@ -948,6 +1021,41 @@ export default function App() {
     } catch (e: any) {
       setDbTestStatus('fail');
       setDbTestMessage(`Connection failed: ${e?.message || String(e)}`);
+    }
+  }
+
+  // Phase 9: Test connection and privileges for Create NEW mode
+  async function runCreateNewPrivilegeTest() {
+    if (!newDbAdminHost.trim() || !newDbAdminUser.trim() || !newDbAdminPassword.trim()) {
+      setNewDbPrivTestStatus('fail');
+      setNewDbPrivTestMessage('Host, username, and password are required.');
+      return;
+    }
+    setNewDbPrivTestStatus('testing');
+    setNewDbPrivTestMessage('');
+    try {
+      const res = await invoke<{ canCreate: boolean; reason: string; detectedRole?: string }>('db_can_create_database', {
+        payload: { engine: dbEngine, connectionString: computedCreateNewMaintenanceConnString },
+      });
+      if (res.canCreate) {
+        // Also check if database already exists
+        const existsRes = await invoke<{ exists: boolean; error?: string }>('db_exists', {
+          payload: { engine: dbEngine, connectionString: computedCreateNewMaintenanceConnString, dbName: newDbName.trim() },
+        });
+        if (existsRes.exists) {
+          setNewDbPrivTestStatus('fail');
+          setNewDbPrivTestMessage(`Database "${newDbName.trim()}" already exists.`);
+        } else {
+          setNewDbPrivTestStatus('success');
+          setNewDbPrivTestMessage(res.reason || 'Privileges OK.');
+        }
+      } else {
+        setNewDbPrivTestStatus('fail');
+        setNewDbPrivTestMessage(res.reason || 'Insufficient privileges.');
+      }
+    } catch (e: any) {
+      setNewDbPrivTestStatus('fail');
+      setNewDbPrivTestMessage(e?.message || String(e));
     }
   }
 
@@ -1535,7 +1643,54 @@ export default function App() {
 
         {dbSetupMode === 'createNew' ? (
           <div style={{ marginTop: 12 }}>
+            {/* Phase 9: New database name field */}
             <div className="wizard-row">
+              <label className="wizard-label">New Database Name</label>
+              <input
+                className="wizard-input"
+                style={{ width: 280 }}
+                value={newDbName}
+                onChange={(e) => setNewDbName(e.target.value)}
+                placeholder="CADalytix_Production"
+              />
+            </div>
+
+            {/* Phase 9: Admin connection fields */}
+            <div style={{ marginTop: 12, padding: 10, border: '1px solid #ccc', borderRadius: 4 }}>
+              <div className="wizard-row"><strong>Database Server Admin Connection</strong></div>
+              <div className="wizard-help">Provide credentials for an account with CREATE DATABASE privileges.</div>
+              <div className="wizard-row">
+                <label className="wizard-label">Host</label>
+                <input className="wizard-input" style={{ width: 200 }} value={newDbAdminHost} onChange={(e) => setNewDbAdminHost(e.target.value)} placeholder="localhost" />
+              </div>
+              <div className="wizard-row">
+                <label className="wizard-label">Port</label>
+                <input className="wizard-input" style={{ width: 100 }} value={newDbAdminPort} onChange={(e) => setNewDbAdminPort(e.target.value)} placeholder="1433 or 5432" />
+                <span className="wizard-help" style={{ marginLeft: 8 }}>1433 = SQL Server, 5432 = PostgreSQL</span>
+              </div>
+              <div className="wizard-row">
+                <label className="wizard-label">Admin Username</label>
+                <input className="wizard-input" style={{ width: 200 }} value={newDbAdminUser} onChange={(e) => setNewDbAdminUser(e.target.value)} placeholder="sa" />
+              </div>
+              <div className="wizard-row">
+                <label className="wizard-label">Admin Password</label>
+                <input className="wizard-input" style={{ width: 200 }} type="password" value={newDbAdminPassword} onChange={(e) => setNewDbAdminPassword(e.target.value)} />
+              </div>
+              <div className="wizard-row">
+                <button
+                  className="wizard-button"
+                  type="button"
+                  disabled={newDbPrivTestStatus === 'testing' || !newDbAdminHost.trim() || !newDbAdminUser.trim() || !newDbAdminPassword.trim()}
+                  onClick={runCreateNewPrivilegeTest}
+                >
+                  {newDbPrivTestStatus === 'testing' ? 'Testing...' : 'Test Connection & Privileges'}
+                </button>
+                {newDbPrivTestStatus === 'success' ? <span className="wizard-success" style={{ marginLeft: 10 }}>✓ {newDbPrivTestMessage}</span> : null}
+                {newDbPrivTestStatus === 'fail' ? <span className="wizard-error" style={{ marginLeft: 10 }}>✗ {newDbPrivTestMessage}</span> : null}
+              </div>
+            </div>
+
+            <div className="wizard-row" style={{ marginTop: 12 }}>
               <strong>Where should the new CADalytix database be created?</strong>
             </div>
 
@@ -1578,6 +1733,49 @@ export default function App() {
                 onChange={(e) => setNewDbMaxSizeGb(e.target.value)}
               />
             </div>
+
+            {/* Phase 9: Engine-specific sizing fields */}
+            {dbEngine === 'sqlserver' ? (
+              <div style={{ marginTop: 12, padding: 10, border: '1px solid #ccc', borderRadius: 4 }}>
+                <div className="wizard-row"><strong>SQL Server Sizing (optional)</strong></div>
+                <div className="wizard-row">
+                  <label className="wizard-label">Initial data file size (MB)</label>
+                  <input className="wizard-input" style={{ width: 120 }} value={newDbInitialDataSizeMb} onChange={(e) => setNewDbInitialDataSizeMb(e.target.value)} />
+                </div>
+                <div className="wizard-row">
+                  <label className="wizard-label">Initial log file size (MB)</label>
+                  <input className="wizard-input" style={{ width: 120 }} value={newDbInitialLogSizeMb} onChange={(e) => setNewDbInitialLogSizeMb(e.target.value)} />
+                </div>
+                <div className="wizard-row">
+                  <label className="wizard-label">Max data file size (MB, 0 = unlimited)</label>
+                  <input className="wizard-input" style={{ width: 120 }} value={newDbMaxDataSizeMb} onChange={(e) => setNewDbMaxDataSizeMb(e.target.value)} />
+                </div>
+                <div className="wizard-row">
+                  <label className="wizard-label">Max log file size (MB, 0 = unlimited)</label>
+                  <input className="wizard-input" style={{ width: 120 }} value={newDbMaxLogSizeMb} onChange={(e) => setNewDbMaxLogSizeMb(e.target.value)} />
+                </div>
+                <div className="wizard-row">
+                  <label className="wizard-label">Data filegrowth (MB, or negative for %)</label>
+                  <input className="wizard-input" style={{ width: 120 }} value={newDbDataFilegrowth} onChange={(e) => setNewDbDataFilegrowth(e.target.value)} />
+                </div>
+                <div className="wizard-row">
+                  <label className="wizard-label">Log filegrowth (MB, or negative for %)</label>
+                  <input className="wizard-input" style={{ width: 120 }} value={newDbLogFilegrowth} onChange={(e) => setNewDbLogFilegrowth(e.target.value)} />
+                </div>
+                <div className="wizard-help">Leave at defaults for typical installations. Negative values indicate percentage growth (e.g., -10 = 10%).</div>
+              </div>
+            ) : null}
+
+            {dbEngine === 'postgres' ? (
+              <div style={{ marginTop: 12, padding: 10, border: '1px solid #ccc', borderRadius: 4 }}>
+                <div className="wizard-row"><strong>PostgreSQL Options (optional)</strong></div>
+                <div className="wizard-row">
+                  <label className="wizard-label">Owner role (leave blank for current user)</label>
+                  <input className="wizard-input" style={{ width: 200 }} value={newDbPgOwner} onChange={(e) => setNewDbPgOwner(e.target.value)} placeholder="e.g., cadalytix_admin" />
+                </div>
+                <div className="wizard-help">PostgreSQL does not support SQL Server-style sizing. The database grows with available disk space.</div>
+              </div>
+            ) : null}
 
             {dbCreateValidationError ? <div className="wizard-error">{dbCreateValidationError}</div> : null}
 

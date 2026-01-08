@@ -2794,6 +2794,12 @@ fn build_install_request(state: &WizardState) -> StartInstallRequest {
         } else {
             "existing".to_string()
         },
+        // Phase 9: TUI uses default database name for create_new
+        new_db_name: if state.db_kind == DbKind::Local {
+            Some("CADalytix".to_string())
+        } else {
+            None
+        },
         new_location: state.new_db_location.as_id().to_string(),
         new_specific_path: state.new_db_specific_path.value.trim().to_string(),
         max_db_size_gb,
@@ -2803,6 +2809,8 @@ fn build_install_request(state: &WizardState) -> StartInstallRequest {
         } else {
             "details".to_string()
         },
+        sql_server_sizing: None, // TUI does not expose advanced sizing yet
+        postgres_options: None,
     };
 
     let mapping_state = Some(MappingState {

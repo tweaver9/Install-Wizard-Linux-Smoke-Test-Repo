@@ -206,6 +206,10 @@ pub fn run_gui() {
             api::installer::test_db_connection,
             api::installer::start_install,
             api::installer::cancel_install,
+            // Phase 9: Database provisioning commands
+            api::installer::db_can_create_database,
+            api::installer::db_exists,
+            api::installer::db_create_database,
             // Setup API handlers
             api::setup::init_setup,
             api::setup::plan_setup,

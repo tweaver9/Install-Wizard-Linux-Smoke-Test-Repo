@@ -274,9 +274,86 @@ All Phase 8 proof files are in `Prod_Wizard_Log/`:
 
 ---
 
-## 🎉 PROJECT STATUS: CUSTOMER READY
+## Phase 9 — Database Provisioning (Create NEW) ✅ COMPLETE (2026-01-08)
 
-All Phase 5-8 deliverables complete with proof artifacts. The installer is ready for customer deployment.
+**Purpose**: Enable "Create NEW database" flow with proper privilege testing and E2E verification.
+
+### 9.1 — Backend Implementation
+
+| Item | Status | Files | Test | Done Condition |
+|------|--------|-------|------|----------------|
+| PostgreSQL CREATE DATABASE | ✅ | database/postgres.rs | test_postgres_create_db_stmt | Generates valid CREATE DATABASE SQL |
+| PostgreSQL owner clause | ✅ | database/postgres.rs | test_postgres_create_db_stmt_with_owner | Owner clause when specified |
+| SQL Server CREATE DATABASE | ✅ | database/sqlserver.rs | test_sql_server_create_db_stmt | Generates valid CREATE DATABASE SQL |
+| SQL Server file sizing | ✅ | database/sqlserver.rs | test_sql_server_alter_file_stmt | Data/log file sizing via ALTER |
+| DB name validation | ✅ | database/mod.rs | test_validate_db_name_* | Rejects invalid names, SQL injection |
+| Sizing validation | ✅ | database/mod.rs | test_validate_sizing_config_* | Range checks, required fields |
+
+### 9.2 — Frontend Implementation
+
+| Item | Status | Files | Done Condition |
+|------|--------|-------|----------------|
+| New DB name input | ✅ | App.tsx | Input field for database name |
+| Admin connection fields | ✅ | App.tsx | Host/Port/User/Password for privileged access |
+| Maintenance conn string | ✅ | App.tsx | Computed string for master/postgres connection |
+| Privilege test button | ✅ | App.tsx | "Test Connection & Privileges" with status display |
+
+### 9.3 — E2E Verification (Docker)
+
+| Case | Engine | Result | Proof File |
+|------|--------|--------|------------|
+| Case A: Create NEW DB (privileged) | PostgreSQL | ✅ PASS | PROOFS/PHASE9/postgres/case_a_success.log |
+| Case B: Permission denied (unprivileged) | PostgreSQL | ✅ PASS | PROOFS/PHASE9/postgres/case_b_privilege_fail.log |
+| Case C: DB already exists | PostgreSQL | ✅ PASS | PROOFS/PHASE9/postgres/case_c_exists_fail.log |
+| Case A: Create NEW DB (privileged) | SQL Server | ✅ PASS | PROOFS/PHASE9/sqlserver/case_a_success.log |
+| Case B: Permission denied (unprivileged) | SQL Server | ✅ PASS | PROOFS/PHASE9/sqlserver/case_b_privilege_fail.log |
+| Case C: DB already exists | SQL Server | ✅ PASS | PROOFS/PHASE9/sqlserver/case_c_exists_fail.log |
+| Case D: File sizing verification | SQL Server | ✅ PASS | PROOFS/PHASE9/sqlserver/case_d_sizing_proof.log |
+
+### 9.4 — Security Verification
+
+| Item | Status | Done Condition |
+|------|--------|----------------|
+| Secret scan on proofs | ✅ PASS | No plaintext passwords in PROOFS/PHASE9/ |
+| Credential redaction | ✅ PASS | All logs use `hasPassword=true` format |
+| Tamper evidence | ✅ PASS | SHA256SUMS.txt generated |
+
+### Proof Files Location
+
+All Phase 9 proof files are in `PROOFS/PHASE9/`:
+- `postgres/case_a_success.log` - DB created successfully
+- `postgres/case_b_privilege_fail.log` - Permission denied (expected)
+- `postgres/case_c_exists_fail.log` - Already exists error (expected)
+- `sqlserver/case_a_success.log` - DB created successfully
+- `sqlserver/case_b_privilege_fail.log` - Permission denied (expected)
+- `sqlserver/case_c_exists_fail.log` - Already exists error (expected)
+- `sqlserver/case_d_sizing_proof.log` - sys.database_files verified (100MB data, 50MB log)
+- `SHA256SUMS.txt` - Tamper-evident hashes
+- `VERIFICATION_STATUS.md` - Complete verification status
+
+### Test Tools Location
+
+| Tool | Location | Purpose |
+|------|----------|---------|
+| `phase9-docker-compose.yml` | `tools/` | Spin up Postgres 16 + SQL Server 2022 |
+| `phase9_e2e_postgres.ps1` | `tools/` | Run PostgreSQL E2E tests |
+| `phase9_e2e_sqlserver.ps1` | `tools/` | Run SQL Server E2E tests |
+
+### Phase 9 DoD ✅ COMPLETE (2026-01-08)
+
+| Criterion | Status | Proof |
+|-----------|--------|-------|
+| PostgreSQL E2E: 3/3 tests pass | ✅ | case_a/b/c logs |
+| SQL Server E2E: 4/4 tests pass | ✅ | case_a/b/c/d logs |
+| No secrets in proof logs | ✅ | Secret scan pass |
+| SHA256 hashes generated | ✅ | SHA256SUMS.txt |
+| Docs updated | ✅ | This checklist, VERIFICATION_STATUS.md |
+
+---
+
+## 🎉 PROJECT STATUS: CUSTOMER READY (Phase 5-9 Complete)
+
+All Phase 5-9 deliverables complete with proof artifacts. The installer supports both "Use EXISTING database" and "Create NEW database" flows.
 
 ### Quick Verification Commands (Windows)
 
@@ -293,6 +370,13 @@ All Phase 5-8 deliverables complete with proof artifacts. The installer is ready
 # Security scans
 .\scan-secrets.ps1
 .\scan-sql-injection.ps1
+
+# Phase 9 E2E (requires Docker)
+cd tools
+docker compose -f phase9-docker-compose.yml up -d
+.\phase9_e2e_postgres.ps1
+.\phase9_e2e_sqlserver.ps1
+docker compose -f phase9-docker-compose.yml down -v
 ```
 
 ### Proof Logs Summary
@@ -303,3 +387,4 @@ All Phase 5-8 deliverables complete with proof artifacts. The installer is ready
 | Phase 6 | P6_smoke_*.log, P6_unit_tests.log | ✅ All pass |
 | Phase 7 | P7_build_windows.log, MANIFEST.sha256 | ✅ All pass |
 | Phase 8 | P8_*.log (release, perf, manifest, security) | ✅ All pass |
+| Phase 9 | PROOFS/PHASE9/{postgres,sqlserver}/*.log, SHA256SUMS.txt | ✅ All pass |

@@ -73,6 +73,7 @@ regex = "1.10"
 crossterm = "0.27"
 ratatui = "0.26"
 async-trait = "0.1.89"
+url = "2.5.8"
 
 # Windows-Specific
 [target.'cfg(windows)'.dependencies]

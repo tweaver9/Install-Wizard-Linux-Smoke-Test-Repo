@@ -30,7 +30,11 @@ $SecretPatterns = @(
     "bearer\s+[a-zA-Z0-9\-_\.]{30,}",        # bearer token (very long = likely real)
     "begin\s+(rsa|dsa|ec|openssh)\s+private\s+key",
     "aws_access_key_id\s*=\s*AKIA[A-Z0-9]{16}",          # AWS key pattern
-    "x-amz-signature\s*=\s*[a-f0-9]{64}"
+    "x-amz-signature\s*=\s*[a-f0-9]{64}",
+    # Phase 9: Database connection string patterns (unmasked passwords)
+    "Password=[^*\[\{][^;]{4,}[;]",          # Password=realvalue; (not masked)
+    "Pwd=[^*\[\{][^;]{4,}[;]",               # Pwd=realvalue; (not masked)
+    "postgresql://[^:]+:[^*@\[\{]{4,}@"      # postgres://user:realpass@ (not masked)
 )
 $CombinedPattern = "(" + ($SecretPatterns -join "|") + ")"
 
@@ -40,7 +44,9 @@ $SafePatterns = @(
     "\*{4,}",                   # Masked with asterisks
     "\[REDACTED\]",             # Explicitly redacted
     "SuperSecret123",           # Known test fixture
-    "TestPassword"
+    "TestPassword",
+    "P9_.*_Pass_2024!",         # Phase 9 E2E test passwords (expected in test scripts)
+    "P9_Test_"                  # Phase 9 E2E test passwords
 )
 
 function Scan-Directory {
