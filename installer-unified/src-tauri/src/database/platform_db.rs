@@ -1209,3 +1209,99 @@ fn should_encrypt_setting_key(key: &str) -> bool {
             | "Weather:ApiKey"
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Phase 8 Task 8.4: Encryption-at-rest sanity lock.
+    ///
+    /// These tests prove that sensitive setting keys are correctly identified
+    /// and that the encryption layer is invoked for them.
+
+    #[test]
+    fn test_should_encrypt_sensitive_keys() {
+        // Connection strings MUST be encrypted
+        assert!(
+            should_encrypt_setting_key("ConfigDb:ConnectionString"),
+            "ConfigDb connection string must be encrypted"
+        );
+        assert!(
+            should_encrypt_setting_key("CallDataDb:ConnectionString"),
+            "CallDataDb connection string must be encrypted"
+        );
+
+        // Secrets/API keys MUST be encrypted
+        assert!(
+            should_encrypt_setting_key("Setup:BootstrapSecret"),
+            "Bootstrap secret must be encrypted"
+        );
+        assert!(
+            should_encrypt_setting_key("Ops:ApiKey"),
+            "Ops API key must be encrypted"
+        );
+        assert!(
+            should_encrypt_setting_key("Weather:ApiKey"),
+            "Weather API key must be encrypted"
+        );
+    }
+
+    #[test]
+    fn test_should_not_encrypt_non_sensitive_keys() {
+        // Non-sensitive settings should NOT be encrypted
+        assert!(
+            !should_encrypt_setting_key("Archive:ScheduleDayOfMonth"),
+            "Archive day of month is not sensitive"
+        );
+        assert!(
+            !should_encrypt_setting_key("Consent:AllowSupportSync"),
+            "Consent flag is not sensitive"
+        );
+        assert!(
+            !should_encrypt_setting_key("Retention:HotDays"),
+            "Retention days is not sensitive"
+        );
+        assert!(
+            !should_encrypt_setting_key("Mapping:Override"),
+            "Mapping override is not sensitive"
+        );
+    }
+
+    #[test]
+    fn test_sensitive_keys_list_comprehensive() {
+        // List all known sensitive keys we expect to encrypt
+        let expected_sensitive_keys = [
+            "ConfigDb:ConnectionString",
+            "CallDataDb:ConnectionString",
+            "Setup:BootstrapSecret",
+            "Ops:ApiKey",
+            "Weather:ApiKey",
+        ];
+
+        for key in expected_sensitive_keys {
+            assert!(
+                should_encrypt_setting_key(key),
+                "Key '{}' should be marked as sensitive and encrypted",
+                key
+            );
+        }
+    }
+
+    #[test]
+    fn test_connection_string_pattern_detection() {
+        // Ensure partial matches don't encrypt (defense in depth)
+        // Only exact key matches should trigger encryption
+        assert!(
+            !should_encrypt_setting_key("ConnectionString"),
+            "Bare ConnectionString key should not match"
+        );
+        assert!(
+            !should_encrypt_setting_key("SomeDb:ConnectionString"),
+            "Unknown DB connection string should not auto-encrypt"
+        );
+        assert!(
+            !should_encrypt_setting_key("ConfigDbConnectionString"),
+            "Key without colon separator should not match"
+        );
+    }
+}

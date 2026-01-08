@@ -57,6 +57,9 @@ pub trait DbConnector: Send + Sync {
 }
 
 /// Production connector that actually connects to databases.
+/// Note: This struct exists for trait boundary injection in tests.
+/// It may appear unused in test builds but is required at runtime.
+#[allow(dead_code)]
 pub struct RealDbConnector;
 
 #[async_trait]

@@ -253,3 +253,147 @@ grep "ExitCode=0" /mnt/e/CADalytix/Prod_Wizard_Log/P6_smoke_linux.log
 - Contains `ExitCode=0` at the end
 - All proof modes show PASS
 
+---
+
+## Phase 7 — Build + Packaging
+
+Phase 7 build scripts orchestrate the build, run smoke tests as a gate, and produce the `CADALYTIX_INSTALLER/` bundle.
+
+### Windows Build
+
+```powershell
+# Full build (build + smoke gate + bundle + manifest)
+cd Prod_Install_Wizard_Deployment\tools
+.\build-unified-installer.ps1
+
+# Fast lane (no rebuild, assumes binary exists)
+.\build-unified-installer.ps1 -NoBuild
+
+# Skip smoke gate (for debugging)
+.\build-unified-installer.ps1 -NoBuild -NoSmoke
+```
+
+### Linux Build
+
+```bash
+# Full build
+cd Prod_Install_Wizard_Deployment/tools
+./build-unified-installer.sh
+
+# Fast lane (no rebuild)
+./build-unified-installer.sh --no-build
+
+# Skip smoke gate
+./build-unified-installer.sh --no-build --no-smoke
+```
+
+### Build Outputs
+
+| Artifact | Location |
+|----------|----------|
+| Bundle | `RepoRoot/CADALYTIX_INSTALLER/` |
+| Build log | `Prod_Wizard_Log/P7_build_windows.log` or `P7_build_linux.log` |
+| Versions | `CADALYTIX_INSTALLER/VERIFY/VERSIONS.txt` |
+| Manifest | `CADALYTIX_INSTALLER/VERIFY/MANIFEST.sha256` |
+| Proof copies | `CADALYTIX_INSTALLER/VERIFY/PROOFS/` |
+
+### Bundle Structure
+
+```
+CADALYTIX_INSTALLER/
+  INSTALLER/
+    windows/installer-unified.exe
+    linux/installer-unified
+  TOOLS/
+    smoke-test-unified-installer.ps1
+    smoke-test-unified-installer.sh
+  DOCS/
+    README.md
+    QUICK_START.md
+    SYSTEM_REQUIREMENTS.md
+    TROUBLESHOOTING.md
+  VERIFY/
+    VERSIONS.txt
+    MANIFEST.sha256
+    PROOFS/
+```
+
+### Verify Manifest
+
+```bash
+cd CADALYTIX_INSTALLER/VERIFY
+sha256sum -c MANIFEST.sha256
+```
+
+### Phase 7 Done Condition
+
+- `CADALYTIX_INSTALLER/` exists with expected structure
+- `P7_build_*.log` ends with `ExitCode=0`
+- `MANIFEST.sha256` contains all files and verifies correctly
+
+---
+
+## Release Lane (CI)
+
+Phase 8 Release Bundle workflow automates the full release packaging pipeline on GitHub Actions.
+
+**Workflow file:** `.github/workflows/release-bundle.yml`
+
+**Triggers:**
+- Manual dispatch (workflow_dispatch)
+- Push tags matching `v*` (e.g., `v1.0.0`, `v2.3.1`)
+
+### Jobs
+
+| Job | Runner | Description |
+|-----|--------|-------------|
+| `windows-release` | `windows-latest` | Build Windows binary, run smoke gate, create bundle ZIP |
+| `linux-release` | `ubuntu-latest` | Build Linux binary, run smoke gate, create bundle TAR.GZ |
+
+### Workflow Steps (per platform)
+
+1. **Checkout** - Clone repository
+2. **Setup Rust** - Install stable toolchain
+3. **Setup Node.js** - Install Node 20
+4. **Install dependencies** - npm ci + (Linux: system libs)
+5. **Build frontend** - npm run build
+6. **Build Rust release** - cargo build --release --locked
+7. **Phase 6 Smoke Gate** - Run smoke-test-unified-installer script
+8. **Phase 7 Bundle** - Run build-unified-installer script
+9. **Verify Manifest** - Run verify-manifest script
+10. **Create Archive** - ZIP (Windows) or TAR.GZ (Linux)
+11. **Write Proof Log** - `P8_release_bundle_{os}.log` with `ExitCode=0`
+12. **Upload Artifacts** - Bundle archive + proof logs
+
+### Artifacts Produced
+
+| Artifact Name | Contents |
+|---------------|----------|
+| `CADALYTIX_INSTALLER_windows` | `CADALYTIX_INSTALLER_windows.zip` |
+| `CADALYTIX_INSTALLER_linux` | `CADALYTIX_INSTALLER_linux.tar.gz` |
+| `windows-release-proof-logs` | `P8_*.log` files from Windows run |
+| `linux-release-proof-logs` | `P8_*.log` files from Linux run |
+
+### Running Manually
+
+1. Go to GitHub Actions tab
+2. Select "Release Bundle" workflow
+3. Click "Run workflow"
+4. Select branch (usually `main`)
+5. Click "Run workflow"
+
+### Creating a Tagged Release
+
+```bash
+# Create and push a tag
+git tag v1.0.0
+git push origin v1.0.0
+# Workflow will trigger automatically
+```
+
+### Done Condition
+
+- Workflow completes successfully (green checkmark)
+- `CADALYTIX_INSTALLER_{os}` artifacts are downloadable
+- Proof logs contain `ExitCode=0`
+

@@ -195,3 +195,117 @@ fn is_transient_io_error(err: &anyhow::Error) -> bool {
 pub fn default_key_path(log_folder: &Path) -> PathBuf {
     log_folder.join("secrets").join("installer_master_key.b64")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Phase 8 Task 8.4: Encryption-at-rest sanity lock.
+    ///
+    /// These tests prove that the SecretProtector correctly encrypts and decrypts secrets.
+
+    #[tokio::test]
+    async fn test_encrypt_decrypt_roundtrip() {
+        let temp_dir = TempDir::new().unwrap();
+        let key_path = temp_dir.path().join("test_key.b64");
+        let protector = SecretProtector::new(key_path);
+
+        let plaintext = "Server=myserver;Database=mydb;User Id=user;Password=SuperSecret123;";
+        let encrypted = protector.encrypt(plaintext).await.unwrap();
+
+        // Encrypted value must start with ENCv1: prefix
+        assert!(
+            encrypted.starts_with(ENC_PREFIX),
+            "Encrypted value must have ENCv1: prefix"
+        );
+
+        // Encrypted value must NOT contain the original plaintext
+        assert!(
+            !encrypted.contains("SuperSecret123"),
+            "Encrypted value must not contain plaintext password"
+        );
+
+        // Decrypt must return original plaintext
+        let decrypted = protector.decrypt(&encrypted).await.unwrap();
+        assert_eq!(decrypted, plaintext, "Decrypted value must match original");
+    }
+
+    #[tokio::test]
+    async fn test_is_encrypted_detection() {
+        let temp_dir = TempDir::new().unwrap();
+        let key_path = temp_dir.path().join("test_key.b64");
+        let protector = SecretProtector::new(key_path);
+
+        // Plaintext is NOT encrypted
+        assert!(!protector.is_encrypted("some plaintext"));
+        assert!(!protector.is_encrypted("Password=secret"));
+
+        // Value with ENCv1: prefix IS encrypted
+        assert!(protector.is_encrypted("ENCv1:abc123"));
+        assert!(protector.is_encrypted("ENCv1:"));
+
+        // Edge cases
+        assert!(!protector.is_encrypted(""));
+        assert!(!protector.is_encrypted("ENC:abc")); // Wrong prefix version
+        assert!(!protector.is_encrypted("encv1:abc")); // Case sensitive
+    }
+
+    #[tokio::test]
+    async fn test_encrypt_empty_string() {
+        let temp_dir = TempDir::new().unwrap();
+        let key_path = temp_dir.path().join("test_key.b64");
+        let protector = SecretProtector::new(key_path);
+
+        let encrypted = protector.encrypt("").await.unwrap();
+        assert_eq!(encrypted, ENC_PREFIX, "Empty string encrypts to just prefix");
+
+        let decrypted = protector.decrypt(&encrypted).await.unwrap();
+        assert_eq!(decrypted, "", "Empty string decrypts correctly");
+    }
+
+    #[tokio::test]
+    async fn test_each_encryption_is_unique() {
+        let temp_dir = TempDir::new().unwrap();
+        let key_path = temp_dir.path().join("test_key.b64");
+        let protector = SecretProtector::new(key_path);
+
+        let plaintext = "test_secret";
+        let enc1 = protector.encrypt(plaintext).await.unwrap();
+        let enc2 = protector.encrypt(plaintext).await.unwrap();
+
+        // Each encryption should produce different ciphertext (random nonce)
+        assert_ne!(
+            enc1, enc2,
+            "Encrypting same value twice must produce different ciphertext (nonce uniqueness)"
+        );
+
+        // But both decrypt to same value
+        let dec1 = protector.decrypt(&enc1).await.unwrap();
+        let dec2 = protector.decrypt(&enc2).await.unwrap();
+        assert_eq!(dec1, plaintext);
+        assert_eq!(dec2, plaintext);
+    }
+
+    #[tokio::test]
+    async fn test_key_persistence() {
+        let temp_dir = TempDir::new().unwrap();
+        let key_path = temp_dir.path().join("test_key.b64");
+
+        let plaintext = "persistent_test";
+        let encrypted;
+
+        // First protector encrypts
+        {
+            let protector1 = SecretProtector::new(key_path.clone());
+            encrypted = protector1.encrypt(plaintext).await.unwrap();
+        }
+
+        // Second protector (same key path) must decrypt correctly
+        {
+            let protector2 = SecretProtector::new(key_path);
+            let decrypted = protector2.decrypt(&encrypted).await.unwrap();
+            assert_eq!(decrypted, plaintext, "Key must persist between instances");
+        }
+    }
+}

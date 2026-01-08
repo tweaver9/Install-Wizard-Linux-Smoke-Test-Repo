@@ -4,6 +4,20 @@
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
+    // Phase 8: Release E2E smoke - runs all proof modes in sequence.
+    // Writes `P8_release_e2e_smoke_<os>.log` under `Prod_Wizard_Log/` and exits 0/1.
+    if args.iter().any(|a| a == "--release-e2e-smoke") {
+        installer_unified::run_release_e2e_smoke();
+        return;
+    }
+
+    // Phase 8: Performance smoke - measures startup time and progress metrics.
+    // Writes `P8_perf_<os>.log` under `Prod_Wizard_Log/` and exits 0/1.
+    if args.iter().any(|a| a == "--perf-smoke") {
+        installer_unified::run_perf_smoke();
+        return;
+    }
+
     // Non-interactive archive pipeline dry-run (deterministic proof runner).
     // Writes `B2_archive_pipeline_dryrun_transcript.log` under `Prod_Wizard_Log/` and exits.
     if args.iter().any(|a| a == "--archive-dry-run") {
