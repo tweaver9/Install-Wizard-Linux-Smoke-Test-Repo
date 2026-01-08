@@ -379,6 +379,42 @@ docker compose -f phase9-docker-compose.yml up -d
 docker compose -f phase9-docker-compose.yml down -v
 ```
 
+### Phase 9 Regression Guard
+
+**Purpose**: Prevent silent regression of Phase 9 proof artifacts.
+
+**Local Verification (fast, no Docker needed):**
+```powershell
+# Windows
+cd Prod_Install_Wizard_Deployment/tools
+.\verify-phase9-proofs.ps1
+
+# Linux
+cd Prod_Install_Wizard_Deployment/tools
+./verify-phase9-proofs.sh
+```
+
+**What it checks:**
+1. ✅ PROOFS/PHASE9 structure exists (postgres a-c, sqlserver a-d)
+2. ✅ Secret-leak scan (password=, pwd=, postgres://, bearer, token=, etc.)
+3. ✅ SHA256SUMS.txt validation (recomputes and compares hashes)
+
+**CI Workflow (manual dispatch):**
+```
+GitHub → Actions → "Phase 9 Proof Verification" → Run workflow
+```
+
+**Artifacts uploaded:**
+- `phase9-verification-log` - Verification output
+- `phase9-proofs-snapshot` - Current PROOFS/PHASE9 directory
+
+**When to run:**
+- Before any release
+- After modifying Phase 9 code
+- When verifying proof integrity after repo changes
+
+---
+
 ### Proof Logs Summary
 
 | Phase | Proof Files | Status |
@@ -388,3 +424,13 @@ docker compose -f phase9-docker-compose.yml down -v
 | Phase 7 | P7_build_windows.log, MANIFEST.sha256 | ✅ All pass |
 | Phase 8 | P8_*.log (release, perf, manifest, security) | ✅ All pass |
 | Phase 9 | PROOFS/PHASE9/{postgres,sqlserver}/*.log, SHA256SUMS.txt | ✅ All pass |
+
+---
+
+### Regression Guard Scripts
+
+| Script | Location | Purpose |
+|--------|----------|---------|
+| `verify-phase9-proofs.ps1` | `tools/` | Local Phase 9 proof verification (Windows) |
+| `verify-phase9-proofs.sh` | `tools/` | Local Phase 9 proof verification (Linux) |
+| `phase9-verify.yml` | `.github/workflows/` | CI workflow for manual proof verification |
