@@ -89,11 +89,15 @@ jobs:
         run: cargo test --lib
 
       # ─────────────────────────────────────────────────
-      # Build Tauri App
+      # Build Tauri App (skip beforeBuildCommand since frontend already built)
       # ─────────────────────────────────────────────────
-      - name: Build Tauri Linux packages
+      - name: Build Rust release binary
+        working-directory: installer-unified/src-tauri
+        run: cargo build --release
+
+      - name: Bundle Linux packages
         working-directory: installer-unified
-        run: cargo tauri build
+        run: cargo tauri bundle --verbose
 
       # ─────────────────────────────────────────────────
       # Debug: List bundle contents
