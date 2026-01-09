@@ -1,0 +1,667 @@
+#!/usr/bin/env bash
+#
+# CADalytix Installer — Smart Linux Entrypoint
+# Automatically detects distro and installs the correct package
+#
+set -Eeuo pipefail
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Constants
+# ─────────────────────────────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ARTIFACTS_DIR="${SCRIPT_DIR}/artifacts"
+CHECKSUMS_DIR="${SCRIPT_DIR}/checksums"
+LOGS_DIR="${SCRIPT_DIR}/logs"
+TUI_DIR="${SCRIPT_DIR}/tui"
+VERSION_FILE="${SCRIPT_DIR}/VERSION.txt"
+
+KNOWN_BINARIES=("cadalytix-installer" "CADalytix-Installer" "cadalytix_installer" "installer-unified")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Globals (set by detection)
+# ─────────────────────────────────────────────────────────────────────────────
+DISTRO_ID=""
+DISTRO_ID_LIKE=""
+DISTRO_VERSION=""
+ARCH=""
+IS_WSL=false
+HAS_GUI=false
+PKG_MANAGER=""
+SELECTED_ARTIFACT=""
+SELECTED_TYPE=""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Flags
+# ─────────────────────────────────────────────────────────────────────────────
+DRY_RUN=false
+VERBOSE=false
+FORCE_DEB=false
+FORCE_RPM=false
+FORCE_APPIMAGE=false
+NO_LAUNCH=false
+USE_TUI=false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Logging
+# ─────────────────────────────────────────────────────────────────────────────
+LOG_FILE=""
+
+init_logging() {
+    mkdir -p "${LOGS_DIR}"
+    LOG_FILE="${LOGS_DIR}/install-$(date +%Y%m%d-%H%M%S).log"
+    echo "CADalytix Installer Log — $(date)" > "${LOG_FILE}"
+    echo "Command: $0 $*" >> "${LOG_FILE}"
+    echo "─────────────────────────────────────────────────────" >> "${LOG_FILE}"
+}
+
+# Colors (disabled if not a terminal)
+if [[ -t 1 ]]; then
+    GREEN='\033[0;32m'
+    RED='\033[0;31m'
+    YELLOW='\033[0;33m'
+    NC='\033[0m' # No Color
+else
+    GREEN='' RED='' YELLOW='' NC=''
+fi
+
+log() { echo "[$(date +%H:%M:%S)] $*" >> "${LOG_FILE}"; }
+log_and_print() { log "$*"; echo "$*"; }
+log_verbose() {
+    log "$*"
+    if [[ "${VERBOSE}" == "true" ]]; then
+        echo "$*"
+    fi
+}
+print_minimal() { echo "$*"; log "$*"; }
+print_success() { echo -e "${GREEN}●${NC} $*"; log "[OK] $*"; }
+print_error() { echo -e "${RED}●${NC} $*"; log "[ERROR] $*"; }
+print_warn() { echo -e "${YELLOW}●${NC} $*"; log "[WARN] $*"; }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Argument parsing
+# ─────────────────────────────────────────────────────────────────────────────
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dry-run) DRY_RUN=true; shift ;;
+            --verbose|-v) VERBOSE=true; shift ;;
+            --force-deb) FORCE_DEB=true; shift ;;
+            --force-rpm) FORCE_RPM=true; shift ;;
+            --force-appimage) FORCE_APPIMAGE=true; shift ;;
+            --no-launch) NO_LAUNCH=true; shift ;;
+            --tui) USE_TUI=true; shift ;;
+            --help|-h) show_help; exit 0 ;;
+            --version) show_version; exit 0 ;;
+            *) echo "Unknown option: $1"; echo "Use --help for usage."; exit 1 ;;
+        esac
+    done
+}
+
+show_help() {
+    cat << 'HELPEOF'
+CADalytix Installer — Smart Linux Entrypoint
+
+Usage: ./INSTALL [OPTIONS]
+
+Options:
+  --dry-run         Show what would happen without making changes
+  --verbose, -v     Show detailed output during installation
+  --force-deb       Force install using .deb package
+  --force-rpm       Force install using .rpm package
+  --force-appimage  Force using the portable AppImage
+  --no-launch       Install only, don't launch the GUI
+  --tui             Use text-based installer (if available)
+  --version         Show version information
+  --help, -h        Show this help message
+HELPEOF
+}
+
+show_version() {
+    local version="unknown"
+    if [[ -f "${VERSION_FILE}" ]]; then
+        version=$(cat "${VERSION_FILE}")
+    fi
+    echo "CADalytix Installer Linux Bundle v${version}"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Support Bundle (generated on failure)
+# ─────────────────────────────────────────────────────────────────────────────
+generate_support_bundle() {
+    local bundle="${LOGS_DIR}/support-bundle-$(date +%Y%m%d-%H%M%S).txt"
+    {
+        echo "════════════════════════════════════════════════════════════"
+        echo "  CADalytix Installer Support Bundle"
+        echo "  Generated: $(date)"
+        echo "════════════════════════════════════════════════════════════"
+        echo ""
+        echo "=== System Info ==="
+        uname -a
+        echo ""
+        echo "=== OS Release ==="
+        cat /etc/os-release 2>/dev/null || echo "(not available)"
+        echo ""
+        echo "=== Architecture ==="
+        echo "Arch: ${ARCH:-$(uname -m)}"
+        echo "glibc: $(ldd --version 2>&1 | head -1 || echo 'unknown')"
+        echo ""
+        echo "=== Detection Results ==="
+        echo "Distro ID: ${DISTRO_ID:-unknown}"
+        echo "Distro Like: ${DISTRO_ID_LIKE:-none}"
+        echo "Package Manager: ${PKG_MANAGER:-unknown}"
+        echo "WSL: ${IS_WSL}"
+        echo "GUI Available: ${HAS_GUI}"
+        echo ""
+        echo "=== Selected Artifact ==="
+        echo "Type: ${SELECTED_TYPE:-none}"
+        echo "File: ${SELECTED_ARTIFACT:-none}"
+        echo ""
+        echo "=== Last 50 Log Lines ==="
+        tail -50 "${LOG_FILE}" 2>/dev/null || echo "(no log available)"
+    } > "${bundle}"
+    echo ""
+    print_warn "Support bundle created: ${bundle}"
+    echo "       Share this file when requesting support."
+}
+
+# Error trap
+on_error() {
+    local exit_code=$?
+    print_error "Installation failed (exit code: ${exit_code})"
+    generate_support_bundle
+    exit ${exit_code}
+}
+trap on_error ERR
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Detection Functions
+# ─────────────────────────────────────────────────────────────────────────────
+detect_arch() {
+    ARCH=$(uname -m)
+    log "Detected architecture: ${ARCH}"
+    case "${ARCH}" in
+        x86_64|amd64) ARCH="x86_64" ;;
+        aarch64|arm64) ARCH="aarch64" ;;
+    esac
+}
+
+detect_distro() {
+    if [[ -f /etc/os-release ]]; then
+        # shellcheck source=/dev/null
+        source /etc/os-release
+        DISTRO_ID="${ID:-unknown}"
+        DISTRO_ID_LIKE="${ID_LIKE:-}"
+        DISTRO_VERSION="${VERSION_ID:-}"
+        log "Detected distro: ${DISTRO_ID} (like: ${DISTRO_ID_LIKE}) version ${DISTRO_VERSION}"
+    else
+        DISTRO_ID="unknown"
+        log "Could not detect distro (/etc/os-release not found)"
+    fi
+}
+
+detect_wsl() {
+    if grep -qi "microsoft" /proc/version 2>/dev/null; then
+        IS_WSL=true
+        log "Detected WSL environment"
+    else
+        IS_WSL=false
+        log "Not running in WSL"
+    fi
+}
+
+detect_gui() {
+    if [[ -n "${DISPLAY:-}" ]] || [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+        HAS_GUI=true
+        log "GUI detected (DISPLAY=${DISPLAY:-} WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-})"
+    else
+        HAS_GUI=false
+        log "No GUI detected"
+    fi
+}
+
+detect_package_manager() {
+    if command -v apt &>/dev/null; then
+        PKG_MANAGER="apt"
+    elif command -v dnf &>/dev/null; then
+        PKG_MANAGER="dnf"
+    elif command -v yum &>/dev/null; then
+        PKG_MANAGER="yum"
+    elif command -v zypper &>/dev/null; then
+        PKG_MANAGER="zypper"
+    elif command -v pacman &>/dev/null; then
+        PKG_MANAGER="pacman"
+    else
+        PKG_MANAGER="unknown"
+    fi
+    log "Detected package manager: ${PKG_MANAGER}"
+}
+
+is_debian_family() {
+    [[ "${DISTRO_ID}" =~ ^(ubuntu|debian|linuxmint|pop|elementary|zorin|kali|raspbian)$ ]] || \
+    [[ "${DISTRO_ID_LIKE}" =~ debian ]]
+}
+
+is_rhel_family() {
+    [[ "${DISTRO_ID}" =~ ^(fedora|rhel|centos|rocky|alma|oracle)$ ]] || \
+    [[ "${DISTRO_ID_LIKE}" =~ (rhel|fedora) ]]
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Artifact Selection
+# ─────────────────────────────────────────────────────────────────────────────
+find_artifacts() {
+    local type="$1"
+    local pattern
+    case "${type}" in
+        deb) pattern="*.deb" ;;
+        rpm) pattern="*.rpm" ;;
+        appimage) pattern="*.AppImage" ;;
+        *) return 1 ;;
+    esac
+    find "${ARTIFACTS_DIR}" -maxdepth 1 -name "${pattern}" -type f 2>/dev/null | sort -V | tail -1
+}
+
+select_artifact() {
+    log "Selecting artifact..."
+
+    # Handle force flags
+    if [[ "${FORCE_DEB}" == "true" ]]; then
+        SELECTED_ARTIFACT=$(find_artifacts "deb")
+        SELECTED_TYPE="deb"
+    elif [[ "${FORCE_RPM}" == "true" ]]; then
+        SELECTED_ARTIFACT=$(find_artifacts "rpm")
+        SELECTED_TYPE="rpm"
+    elif [[ "${FORCE_APPIMAGE}" == "true" ]]; then
+        SELECTED_ARTIFACT=$(find_artifacts "appimage")
+        SELECTED_TYPE="appimage"
+    elif is_debian_family; then
+        SELECTED_ARTIFACT=$(find_artifacts "deb")
+        SELECTED_TYPE="deb"
+        log "Debian family detected"
+    elif is_rhel_family; then
+        SELECTED_ARTIFACT=$(find_artifacts "rpm")
+        SELECTED_TYPE="rpm"
+        log "RHEL family detected"
+    elif [[ "${IS_WSL}" == "true" ]]; then
+        SELECTED_ARTIFACT=$(find_artifacts "deb")
+        SELECTED_TYPE="deb"
+        [[ -z "${SELECTED_ARTIFACT}" ]] && { SELECTED_ARTIFACT=$(find_artifacts "rpm"); SELECTED_TYPE="rpm"; }
+        log "WSL detected, avoiding AppImage"
+    else
+        SELECTED_ARTIFACT=$(find_artifacts "appimage")
+        SELECTED_TYPE="appimage"
+        log "Unknown distro, using AppImage"
+    fi
+
+    if [[ -z "${SELECTED_ARTIFACT}" ]] || [[ ! -f "${SELECTED_ARTIFACT}" ]]; then
+        log_and_print "ERROR: No suitable artifact found in ${ARTIFACTS_DIR}"
+        exit 1
+    fi
+    log "Selected: ${SELECTED_ARTIFACT} (type: ${SELECTED_TYPE})"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Checksum Verification
+# ─────────────────────────────────────────────────────────────────────────────
+verify_checksum() {
+    local checksum_file="${CHECKSUMS_DIR}/SHA256SUMS.txt"
+    local artifact_name
+    artifact_name=$(basename "${SELECTED_ARTIFACT}")
+
+    if [[ ! -f "${checksum_file}" ]]; then
+        log "Warning: No checksum file found, skipping verification"
+        if [[ "${VERBOSE}" == "true" ]]; then
+            print_warn "Checksum file not found, skipping verification"
+        fi
+        return 0
+    fi
+
+    if ! command -v sha256sum &>/dev/null; then
+        log "Warning: sha256sum not available, skipping verification"
+        return 0
+    fi
+
+    log "Verifying checksum for ${artifact_name}..."
+    local expected_sum
+    expected_sum=$(grep -F "${artifact_name}" "${checksum_file}" | awk '{print $1}')
+
+    if [[ -z "${expected_sum}" ]]; then
+        log "Warning: No checksum entry for ${artifact_name}"
+        return 0
+    fi
+
+    local actual_sum
+    actual_sum=$(sha256sum "${SELECTED_ARTIFACT}" | awk '{print $1}')
+
+    if [[ "${expected_sum}" != "${actual_sum}" ]]; then
+        print_error "Checksum mismatch for ${artifact_name}"
+        log "Expected: ${expected_sum}"
+        log "Actual:   ${actual_sum}"
+        exit 1
+    fi
+
+    log "Checksum verified OK"
+    log_verbose "Checksum OK: ${artifact_name}"
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Installation Functions
+# ─────────────────────────────────────────────────────────────────────────────
+run_sudo() {
+    if [[ $(id -u) -eq 0 ]]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+
+install_deb() {
+    local artifact="$1"
+    log_verbose "Installing deb: ${artifact}"
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        echo "[DRY-RUN] Would install: ${artifact}"
+        echo "[DRY-RUN] Command: sudo apt install -y \"${artifact}\""
+        return 0
+    fi
+
+    if command -v apt &>/dev/null; then
+        log "Using apt install"
+        run_sudo apt install -y "${artifact}" 2>&1 | tee -a "${LOG_FILE}"
+    else
+        log "Using dpkg -i"
+        run_sudo dpkg -i "${artifact}" 2>&1 | tee -a "${LOG_FILE}"
+        if command -v apt-get &>/dev/null; then
+            run_sudo apt-get -f install -y 2>&1 | tee -a "${LOG_FILE}"
+        fi
+    fi
+    print_success "Package installed"
+}
+
+install_rpm() {
+    local artifact="$1"
+    log_verbose "Installing rpm: ${artifact}"
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        echo "[DRY-RUN] Would install: ${artifact}"
+        echo "[DRY-RUN] Command: sudo dnf install -y \"${artifact}\""
+        return 0
+    fi
+
+    if command -v dnf &>/dev/null; then
+        log "Using dnf install"
+        run_sudo dnf install -y "${artifact}" 2>&1 | tee -a "${LOG_FILE}"
+    elif command -v yum &>/dev/null; then
+        log "Using yum localinstall"
+        run_sudo yum localinstall -y "${artifact}" 2>&1 | tee -a "${LOG_FILE}"
+    else
+        log "Using rpm -Uvh"
+        run_sudo rpm -Uvh "${artifact}" 2>&1 | tee -a "${LOG_FILE}"
+    fi
+    print_success "Package installed"
+}
+
+check_fuse() {
+    log "Checking FUSE availability..."
+    local has_fuse=false
+
+    [[ -e /dev/fuse ]] && has_fuse=true
+    command -v fusermount &>/dev/null && has_fuse=true
+    command -v fusermount3 &>/dev/null && has_fuse=true
+
+    if ldconfig -p 2>/dev/null | grep -qE 'libfuse\.so\.[23]|libfuse[23]'; then
+        has_fuse=true
+    fi
+
+    if [[ "${has_fuse}" == "true" ]]; then
+        log "FUSE appears to be available"
+        return 0
+    else
+        log "FUSE may not be available"
+        return 1
+    fi
+}
+
+show_fuse_help() {
+    echo ""
+    echo "This portable build needs FUSE support. Install it with:"
+    echo ""
+    case "${DISTRO_ID}" in
+        ubuntu|debian|linuxmint|pop)
+            echo "  sudo apt install -y libfuse2"
+            [[ "${DISTRO_VERSION}" =~ ^24\. ]] && echo "  # Or on Ubuntu 24.04+: sudo apt install -y libfuse2t64"
+            ;;
+        fedora|rhel|centos|rocky|alma)
+            echo "  sudo dnf install -y fuse fuse-libs"
+            ;;
+        opensuse*)
+            echo "  sudo zypper install -y fuse libfuse2"
+            ;;
+        *)
+            echo "  Install 'fuse' or 'libfuse2' using your package manager"
+            ;;
+    esac
+    echo ""
+    echo "Alternative: Extract and run without FUSE:"
+    echo "  ${SELECTED_ARTIFACT} --appimage-extract"
+    echo "  ./squashfs-root/AppRun"
+    echo ""
+}
+
+run_appimage() {
+    local artifact="$1"
+    log_verbose "Running AppImage: ${artifact}"
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        echo "[DRY-RUN] Would run: ${artifact}"
+        return 0
+    fi
+
+    chmod +x "${artifact}"
+
+    # Try to launch the AppImage directly (captures stderr for FUSE detection)
+    print_minimal "Launching CADalytix Installer..."
+    log "Launching AppImage: ${artifact}"
+
+    local tmplog
+    tmplog=$(mktemp)
+
+    # Attempt to launch - capture stderr briefly to detect FUSE issues
+    # Use timeout to avoid blocking forever on prompts
+    if timeout 3s "${artifact}" --version >"${tmplog}" 2>&1; then
+        log "AppImage version check OK"
+    else
+        local exit_code=$?
+        local output
+        output=$(cat "${tmplog}")
+
+        # Check for FUSE errors
+        if echo "${output}" | grep -qiE "fuse|libfuse|AppImages require FUSE|dlopen.*fuse"; then
+            log "FUSE error detected: ${output}"
+            rm -f "${tmplog}"
+            show_fuse_help
+            return 1
+        fi
+
+        # Timeout or other error - still try to launch (might be fine for GUI)
+        log "Version check exit ${exit_code}, trying launch anyway: ${output}"
+    fi
+    rm -f "${tmplog}"
+
+    # Launch the AppImage in background
+    nohup "${artifact}" > /dev/null 2>&1 &
+    local pid=$!
+
+    # Brief sleep to catch immediate crashes
+    sleep 1
+
+    if kill -0 "${pid}" 2>/dev/null; then
+        log "AppImage launched successfully (PID: ${pid})"
+        print_success "Installer launched"
+        return 0
+    else
+        # Process died - try to figure out why
+        print_error "AppImage failed to start"
+        log "AppImage process exited immediately"
+
+        # Last-ditch FUSE check (might have failed on actual launch)
+        if ! check_fuse; then
+            show_fuse_help
+        fi
+        return 1
+    fi
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Launch Detection (after deb/rpm install)
+# ─────────────────────────────────────────────────────────────────────────────
+find_installed_binary() {
+    log "Searching for installed binary..."
+
+    # Check known binary names first
+    for bin in "${KNOWN_BINARIES[@]}"; do
+        if command -v "${bin}" &>/dev/null; then
+            log "Found binary: ${bin}"
+            echo "${bin}"
+            return 0
+        fi
+        if [[ -x "/usr/bin/${bin}" ]]; then
+            log "Found binary: /usr/bin/${bin}"
+            echo "/usr/bin/${bin}"
+            return 0
+        fi
+    done
+
+    # Search for cadalytix in /usr/bin
+    local found
+    found=$(find /usr/bin -iname "*cadalytix*" -type f -executable 2>/dev/null | head -1)
+    if [[ -n "${found}" ]]; then
+        log "Found binary via search: ${found}"
+        echo "${found}"
+        return 0
+    fi
+
+    log "No installed binary found"
+    return 1
+}
+
+launch_gui() {
+    if [[ "${NO_LAUNCH}" == "true" ]]; then
+        log "Skipping launch (--no-launch)"
+        return 0
+    fi
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        echo "[DRY-RUN] Would launch GUI"
+        return 0
+    fi
+
+    local binary
+    if binary=$(find_installed_binary); then
+        print_minimal "Launching CADalytix Installer..."
+        nohup "${binary}" >/dev/null 2>&1 &
+        log "Launched: ${binary}"
+        print_success "Installer launched"
+    else
+        print_success "Installed"
+        print_minimal "Launch from your Applications menu: CADalytix Installer"
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TUI/Headless Routing
+# ─────────────────────────────────────────────────────────────────────────────
+route_to_tui() {
+    local tui_installer="${TUI_DIR}/INSTALL"
+
+    if [[ -x "${tui_installer}" ]]; then
+        log "Routing to TUI installer"
+        exec "${tui_installer}" "$@"
+    else
+        print_error "No GUI detected and no TUI bundle present."
+        log "No TUI installer found at: ${tui_installer}"
+        echo "       Use the headless bundle or run with GUI (set DISPLAY)."
+        exit 1
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main Entry Point
+# ─────────────────────────────────────────────────────────────────────────────
+main() {
+    parse_args "$@"
+    init_logging "$@"
+
+    log "Starting CADalytix Installer"
+    log "Script directory: ${SCRIPT_DIR}"
+
+    # Run all detection
+    print_minimal "Detecting system..."
+    detect_arch
+    detect_distro
+    detect_wsl
+    detect_gui
+    detect_package_manager
+
+    # Explicit --tui flag always routes to TUI
+    if [[ "${USE_TUI}" == "true" ]]; then
+        route_to_tui "$@"
+    fi
+
+    # Select artifact first (needed to decide TUI fallback)
+    select_artifact
+
+    # No GUI + not using AppImage → need TUI
+    # (AppImage can run headless with --appimage-extract-and-run, but deb/rpm installed GUI apps need X)
+    if [[ "${HAS_GUI}" == "false" ]] && [[ "${SELECTED_TYPE}" != "appimage" ]]; then
+        route_to_tui "$@"
+    fi
+
+    # Show selection with "Recommended" messaging
+    local artifact_name
+    artifact_name=$(basename "${SELECTED_ARTIFACT}")
+
+    case "${SELECTED_TYPE}" in
+        deb)
+            print_success "Recommended: Ubuntu/Debian package (.deb)"
+            ;;
+        rpm)
+            print_success "Recommended: RHEL/Fedora package (.rpm)"
+            ;;
+        appimage)
+            print_success "Recommended: Portable AppImage"
+            ;;
+    esac
+
+    log "Detected: ${DISTRO_ID:-unknown} (${DISTRO_ID_LIKE:-none}), selected: ${SELECTED_TYPE}"
+    log_verbose "Selected artifact: ${artifact_name}"
+
+    # Verify checksum
+    verify_checksum
+
+    # Install based on type
+    print_minimal "Installing..."
+    case "${SELECTED_TYPE}" in
+        deb)
+            install_deb "${SELECTED_ARTIFACT}"
+            launch_gui
+            ;;
+        rpm)
+            install_rpm "${SELECTED_ARTIFACT}"
+            launch_gui
+            ;;
+        appimage)
+            run_appimage "${SELECTED_ARTIFACT}"
+            ;;
+    esac
+
+    log "Installation complete"
+    print_success "Done."
+}
+
+# Run main
+main "$@"

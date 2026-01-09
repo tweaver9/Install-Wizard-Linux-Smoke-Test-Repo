@@ -1,0 +1,161 @@
+/* ============================================================
+   PlatformChooser Styles
+   Smoky gradient background with platform selection cards
+   ============================================================ */
+
+.chooser-root {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+  
+  /* Smoky gradient: black → darkpurple → purple → lightpurple → neonpurple → white */
+  background: linear-gradient(
+    135deg,
+    #0a0a0a 0%,
+    #1a0a2e 15%,
+    #2d1b4e 30%,
+    #5c3d7a 50%,
+    #8b5cf6 70%,
+    #c4b5fd 85%,
+    #f5f3ff 100%
+  );
+  
+  /* Subtle overlay for smoky effect */
+  position: relative;
+}
+
+.chooser-root::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse at 30% 20%,
+    rgba(139, 92, 246, 0.15) 0%,
+    transparent 50%
+  ),
+  radial-gradient(
+    ellipse at 70% 80%,
+    rgba(196, 181, 253, 0.1) 0%,
+    transparent 40%
+  );
+  pointer-events: none;
+}
+
+.chooser-container {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 32px;
+  max-width: 600px;
+  width: 100%;
+}
+
+/* Logo */
+.chooser-logo {
+  display: flex;
+  justify-content: center;
+}
+
+.chooser-logo-img {
+  max-width: 200px;
+  height: auto;
+  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.3));
+}
+
+/* Platform Cards Container */
+.chooser-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  width: 100%;
+}
+
+/* Individual Card */
+.chooser-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 24px 20px;
+  background: rgba(255, 255, 255, 0.95);
+  border: 2px solid rgba(200, 200, 200, 0.5);
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.chooser-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 24px rgba(139, 92, 246, 0.25);
+  border-color: rgba(139, 92, 246, 0.4);
+}
+
+.chooser-card:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.5), 0 8px 24px rgba(139, 92, 246, 0.25);
+}
+
+/* Recommended Card Styling */
+.chooser-card.recommended {
+  border-color: #8b5cf6;
+  box-shadow: 0 4px 16px rgba(139, 92, 246, 0.3), 0 0 20px rgba(139, 92, 246, 0.15);
+}
+
+.chooser-card.recommended:hover {
+  box-shadow: 0 8px 24px rgba(139, 92, 246, 0.4), 0 0 30px rgba(139, 92, 246, 0.2);
+}
+
+.chooser-recommended-badge {
+  position: absolute;
+  top: -10px;
+  right: 12px;
+  background: linear-gradient(135deg, #8b5cf6 0%, #a78bfa 100%);
+  color: white;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  box-shadow: 0 2px 8px rgba(139, 92, 246, 0.4);
+}
+
+/* Card Icon */
+.chooser-card-icon {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+  margin-bottom: 12px;
+}
+
+/* Card Title */
+.chooser-card-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #1a1a2e;
+  margin-bottom: 6px;
+}
+
+/* Card Description */
+.chooser-card-desc {
+  margin: 0;
+  font-size: 13px;
+  color: #555;
+  text-align: center;
+}
+
+/* Version String */
+.chooser-version {
+  color: #ff8c00;
+  font-size: 14px;
+  font-weight: 600;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  letter-spacing: 0.3px;
+}
+

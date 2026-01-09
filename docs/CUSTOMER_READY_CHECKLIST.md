@@ -31,7 +31,7 @@
 
 ---
 
-## Phase 5 — Installation Logic (Authoritative: PHASE5_EXECUTION_PLAYBOOK.md)
+## Phase 5 — Installation Logic (Authoritative: REMAINING_WORK_COMPLETION_PLAN.md)
 
 ### D1 — Mapping Contract + Persistence ✅ DONE
 

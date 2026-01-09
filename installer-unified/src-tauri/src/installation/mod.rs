@@ -9,6 +9,7 @@
 
 pub mod docker;
 pub mod files;
+pub mod linux_parsers;
 pub mod service;
 
 #[cfg(windows)]

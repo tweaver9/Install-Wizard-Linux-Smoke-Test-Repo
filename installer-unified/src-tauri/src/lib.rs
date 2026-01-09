@@ -200,6 +200,7 @@ pub fn run_gui() {
         })
         .invoke_handler(tauri::generate_handler![
             // UI helper + installer orchestration commands
+            api::installer::spawn_installer_window,
             api::installer::file_exists,
             api::installer::get_free_space_bytes,
             api::installer::create_support_bundle,

@@ -13,13 +13,14 @@
     "windows": [
       {
         "label": "main",
-        "title": "CADalytix Setup",
-        "width": 900,
-        "height": 600,
-        "resizable": true,
+        "title": "CADalytix Installer",
+        "width": 640,
+        "height": 420,
+        "resizable": false,
         "fullscreen": false,
-        "minWidth": 800,
-        "minHeight": 600
+        "center": true,
+        "minWidth": 640,
+        "minHeight": 420
       }
     ],
     "security": {

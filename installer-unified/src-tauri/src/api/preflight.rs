@@ -169,6 +169,161 @@ pub async fn preflight_host(
         });
     }
 
+    // Linux-specific preflight checks
+    #[cfg(target_os = "linux")]
+    {
+        use std::path::Path;
+
+        // Linux distro detection
+        match crate::installation::linux::detect_linux_distro().await {
+            Ok(distro) => {
+                checks.push(PreflightCheckDto {
+                    name: "Linux Distribution".to_string(),
+                    status: "Pass".to_string(),
+                    detail: format!(
+                        "{} (id={}, version={})",
+                        distro.pretty_name, distro.id, distro.version_id
+                    ),
+                });
+            }
+            Err(e) => {
+                warn!(
+                    "[PHASE: preflight] [STEP: host] Linux distro detection error: {}",
+                    e
+                );
+                checks.push(PreflightCheckDto {
+                    name: "Linux Distribution".to_string(),
+                    status: if strict_mode {
+                        "Fail".to_string()
+                    } else {
+                        "Warn".to_string()
+                    },
+                    detail: "Unable to detect Linux distribution. Please check logs.".to_string(),
+                });
+            }
+        }
+
+        // Linux disk space check (minimum 1 GB on root filesystem)
+        match crate::installation::linux::get_free_space_bytes_linux(Path::new("/")).await {
+            Ok(bytes) => {
+                let min_bytes: u64 = 1_000_000_000; // 1 GB
+                let ok = bytes >= min_bytes;
+                checks.push(PreflightCheckDto {
+                    name: "Disk Space (/)".to_string(),
+                    status: if ok {
+                        "Pass".to_string()
+                    } else {
+                        "Fail".to_string()
+                    },
+                    detail: format!(
+                        "Free space: {} MB (minimum: {} MB)",
+                        bytes / 1_000_000,
+                        min_bytes / 1_000_000
+                    ),
+                });
+            }
+            Err(e) => {
+                warn!(
+                    "[PHASE: preflight] [STEP: host] Linux disk space check error: {}",
+                    e
+                );
+                checks.push(PreflightCheckDto {
+                    name: "Disk Space (/)".to_string(),
+                    status: if strict_mode {
+                        "Fail".to_string()
+                    } else {
+                        "Warn".to_string()
+                    },
+                    detail: "Unable to determine free disk space. Please check logs.".to_string(),
+                });
+            }
+        }
+
+        // Linux memory check (minimum 512 MB available)
+        match crate::installation::linux::get_available_memory_mb().await {
+            Ok(mb) => {
+                let min_mb: u64 = 512;
+                let ok = mb >= min_mb;
+                checks.push(PreflightCheckDto {
+                    name: "Available Memory".to_string(),
+                    status: if ok {
+                        "Pass".to_string()
+                    } else {
+                        "Fail".to_string()
+                    },
+                    detail: format!("Available: {} MB (minimum: {} MB)", mb, min_mb),
+                });
+            }
+            Err(e) => {
+                warn!(
+                    "[PHASE: preflight] [STEP: host] Linux memory check error: {}",
+                    e
+                );
+                checks.push(PreflightCheckDto {
+                    name: "Available Memory".to_string(),
+                    status: if strict_mode {
+                        "Fail".to_string()
+                    } else {
+                        "Warn".to_string()
+                    },
+                    detail: "Unable to determine available memory. Please check logs.".to_string(),
+                });
+            }
+        }
+
+        // Docker checks (informational - detect presence and daemon status)
+        // Note: Docker mode determination happens elsewhere; this is informational.
+        match crate::installation::docker::get_docker_version().await {
+            Ok(version) => {
+                checks.push(PreflightCheckDto {
+                    name: "Docker".to_string(),
+                    status: "Pass".to_string(),
+                    detail: format!(
+                        "Docker installed (v{}.{}.{})",
+                        version.major, version.minor, version.patch
+                    ),
+                });
+
+                // If Docker is installed, also check if daemon is running
+                match crate::installation::docker::is_docker_daemon_running().await {
+                    Ok(true) => {
+                        checks.push(PreflightCheckDto {
+                            name: "Docker Daemon".to_string(),
+                            status: "Pass".to_string(),
+                            detail: "Docker daemon is running".to_string(),
+                        });
+                    }
+                    Ok(false) => {
+                        checks.push(PreflightCheckDto {
+                            name: "Docker Daemon".to_string(),
+                            status: "Warn".to_string(),
+                            detail: "Docker daemon is not running or not accessible".to_string(),
+                        });
+                    }
+                    Err(e) => {
+                        warn!(
+                            "[PHASE: preflight] [STEP: host] Docker daemon check error: {}",
+                            e
+                        );
+                        checks.push(PreflightCheckDto {
+                            name: "Docker Daemon".to_string(),
+                            status: "Warn".to_string(),
+                            detail: "Unable to check Docker daemon status".to_string(),
+                        });
+                    }
+                }
+            }
+            Err(_) => {
+                // Docker not installed - informational only, not a failure
+                checks.push(PreflightCheckDto {
+                    name: "Docker".to_string(),
+                    status: "Warn".to_string(),
+                    detail: "Docker not detected (required for Docker deployment mode)".to_string(),
+                });
+            }
+        }
+    }
+
     // Domain membership (best-effort, Windows-only heuristic)
     let mut is_domain_joined = false;
     if is_windows {

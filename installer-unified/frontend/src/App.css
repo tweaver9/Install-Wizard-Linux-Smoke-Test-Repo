@@ -72,7 +72,44 @@
 }
 
 .wizard-button.primary {
-  border-color: #2b579a;
+  background: #0078d4;
+  color: #ffffff;
+  border-color: #0078d4;
+}
+
+.wizard-button.primary:hover:not(:disabled) {
+  background: #106ebe;
+  border-color: #106ebe;
+}
+
+/* Secondary button hover */
+.wizard-button:not(.primary):hover:not(:disabled) {
+  background: #e8e8e8;
+  border-color: #707070;
+}
+
+/* ============================================================
+   Accessibility: Focus-visible outlines for keyboard navigation
+   ============================================================ */
+
+.wizard-button:focus-visible {
+  outline: 2px solid #0078d4;
+  outline-offset: 2px;
+}
+
+.wizard-input:focus-visible,
+.wizard-select:focus-visible,
+.wizard-textarea:focus-visible {
+  outline: 2px solid #0078d4;
+  outline-offset: 1px;
+  border-color: #0078d4;
+}
+
+/* Ensure checkboxes and radio buttons also get focus indicators */
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible {
+  outline: 2px solid #0078d4;
+  outline-offset: 2px;
 }
 
 .wizard-row {
@@ -112,6 +149,12 @@
   margin-top: 6px;
   font-size: 12px;
   color: #b00020;
+}
+
+.wizard-success {
+  color: #107c10;
+  font-weight: 600;
+  margin-top: 8px;
 }
 
 .platform-grid {
@@ -265,4 +308,54 @@
   overflow: auto;
   font-family: Consolas, "Courier New", monospace;
   font-size: 12px;
+}
+
+/* ============================================================
+   Platform Theme Variations
+   Windows: Clean, light surfaces, blue accent
+   Docker: Slightly different accent, professional
+   ============================================================ */
+
+/* Windows Theme (default) */
+.wizard-root[data-platform="windows"] {
+  --wizard-accent: #0078d4;
+  --wizard-accent-hover: #106ebe;
+  --wizard-header-bg: #f8f8f8;
+  --wizard-surface: #ffffff;
+}
+
+.wizard-root[data-platform="windows"] .wizard-button.primary {
+  background: var(--wizard-accent);
+  border-color: var(--wizard-accent);
+}
+
+.wizard-root[data-platform="windows"] .wizard-button.primary:hover:not(:disabled) {
+  background: var(--wizard-accent-hover);
+  border-color: var(--wizard-accent-hover);
+}
+
+/* Docker/Linux Theme */
+.wizard-root[data-platform="docker"] {
+  --wizard-accent: #7c3aed;
+  --wizard-accent-hover: #6d28d9;
+  --wizard-header-bg: #f5f3ff;
+  --wizard-surface: #ffffff;
+}
+
+.wizard-root[data-platform="docker"] .wizard-button.primary {
+  background: var(--wizard-accent);
+  border-color: var(--wizard-accent);
+}
+
+.wizard-root[data-platform="docker"] .wizard-button.primary:hover:not(:disabled) {
+  background: var(--wizard-accent-hover);
+  border-color: var(--wizard-accent-hover);
+}
+
+.wizard-root[data-platform="docker"] .wizard-header {
+  background: var(--wizard-header-bg);
+}
+
+.wizard-root[data-platform="docker"] .wizard-footer {
+  background: var(--wizard-header-bg);
 }

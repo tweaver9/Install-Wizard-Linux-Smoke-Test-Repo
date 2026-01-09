@@ -1,0 +1,13 @@
+/* WizardFrame styles - extracted from App.css for clarity */
+/* Note: Most base styles remain in App.css; this file adds component-specific overrides */
+
+/* Ensure wizard header has room for step indicator */
+.wizard-header {
+  padding-bottom: 8px;
+}
+
+/* When step indicator is present, reduce spacing */
+.wizard-header .step-indicator {
+  margin-top: 8px;
+}
+

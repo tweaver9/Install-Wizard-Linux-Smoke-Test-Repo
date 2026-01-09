@@ -1,0 +1,78 @@
+# CADalytix Docker Compose Template
+# This file is processed by the installer to generate a production docker-compose.yml
+# Placeholders are replaced with actual values during installation.
+#
+# Required placeholders:
+#   {{DB_CONNECTION_STRING}} - Database connection string
+#   {{DATA_PATH}}            - Host path for data persistence
+#   {{WEB_PORT}}             - External port for web service (default: 8080)
+#   {{LOG_PATH}}             - Host path for log files
+#   {{INSTALL_ID}}           - Unique installation identifier
+
+version: "3.8"
+
+networks:
+  cadalytix-net:
+    driver: bridge
+
+volumes:
+  cadalytix-data:
+    driver: local
+    driver_opts:
+      type: "none"
+      o: "bind"
+      # Quoted to handle paths with spaces
+      device: "{{DATA_PATH}}"
+  cadalytix-logs:
+    driver: local
+    driver_opts:
+      type: "none"
+      o: "bind"
+      # Quoted to handle paths with spaces
+      device: "{{LOG_PATH}}"
+
+services:
+  cadalytix-web:
+    image: cadalytix/web:latest
+    container_name: cadalytix-web
+    restart: unless-stopped
+    networks:
+      - cadalytix-net
+    ports:
+      - "{{WEB_PORT}}:8080"
+    environment:
+      - CADALYTIX_DB_CONNECTION_STRING={{DB_CONNECTION_STRING}}
+      - CADALYTIX_LOG_LEVEL=Info
+      - CADALYTIX_INSTALL_ID={{INSTALL_ID}}
+      - ASPNETCORE_URLS=http://+:8080
+    volumes:
+      - cadalytix-logs:/app/logs
+    depends_on:
+      - cadalytix-worker
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  cadalytix-worker:
+    image: cadalytix/worker:latest
+    container_name: cadalytix-worker
+    restart: unless-stopped
+    networks:
+      - cadalytix-net
+    environment:
+      - CADALYTIX_DB_CONNECTION_STRING={{DB_CONNECTION_STRING}}
+      - CADALYTIX_LOG_LEVEL=Info
+      - CADALYTIX_INSTALL_ID={{INSTALL_ID}}
+    volumes:
+      - cadalytix-data:/app/data
+      - cadalytix-logs:/app/logs
+    healthcheck:
+      test: ["CMD", "pgrep", "-x", "cadalytix-worker"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+

@@ -3,9 +3,44 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
 import { listenToEvent, preflightDataSource, type DiscoveredColumnDto, type ProgressEvent } from './lib/api';
+import PlatformChooser from './components/PlatformChooser';
+import WizardFrame from './components/WizardFrame';
+import Modal, { type ModalState, emptyModal } from './components/Modal';
+import {
+  PlatformStep,
+  WelcomeStep,
+  LicenseStep,
+  InstallTypeStep,
+  DestinationStep,
+  DataSourceStep,
+  DatabaseStep,
+  StorageStep,
+  RetentionStep,
+  ArchiveStep,
+  ConsentStep,
+  MappingStep,
+  ReadyStep,
+  InstallingStep,
+  CompleteStep,
+} from './components/steps';
 import './App.css';
 
+type ScreenMode = 'chooser' | 'installer';
 type InstallMode = 'windows' | 'docker';
+
+/**
+ * Parse URL query parameters to determine screen and platform.
+ */
+function parseQueryParams(): { screen: ScreenMode; platform: InstallMode } {
+  const params = new URLSearchParams(window.location.search);
+  const screenParam = params.get('screen');
+  const platformParam = params.get('platform');
+
+  const screen: ScreenMode = screenParam === 'installer' ? 'installer' : 'chooser';
+  const platform: InstallMode = platformParam === 'docker' ? 'docker' : 'windows';
+
+  return { screen, platform };
+}
 type WizardPage =
   | 'platform'
   | 'welcome'
@@ -22,6 +57,48 @@ type WizardPage =
   | 'ready'
   | 'installing'
   | 'complete';
+
+/** Wizard pages in order (for step indicator) - excludes platform chooser */
+const WIZARD_PAGES: WizardPage[] = [
+  'welcome',
+  'license',
+  'installType',
+  'destination',
+  'dataSource',
+  'database',
+  'storage',
+  'retention',
+  'archive',
+  'consent',
+  'mapping',
+  'ready',
+  'installing',
+  'complete',
+];
+
+const WIZARD_STEP_NAMES: Record<WizardPage, string> = {
+  platform: 'Platform',
+  welcome: 'Welcome',
+  license: 'License',
+  installType: 'Installation Type',
+  destination: 'Destination',
+  dataSource: 'Data Source',
+  database: 'Database',
+  storage: 'Storage',
+  retention: 'Retention',
+  archive: 'Archive',
+  consent: 'Consent',
+  mapping: 'Mapping',
+  ready: 'Review',
+  installing: 'Installing',
+  complete: 'Complete',
+};
+
+function getStepInfo(page: WizardPage): { currentStep: number; totalSteps: number } {
+  const index = WIZARD_PAGES.indexOf(page);
+  if (index === -1) return { currentStep: 0, totalSteps: WIZARD_PAGES.length };
+  return { currentStep: index + 1, totalSteps: WIZARD_PAGES.length };
+}
 
 type InstallationType = 'typical' | 'custom' | 'import';
 
@@ -60,86 +137,8 @@ interface SourceField {
   displayName: string;
 }
 
-interface ModalState {
-  kind: 'none' | 'confirmCancel' | 'error' | 'replaceMapping' | 'sourceAlreadyMapped';
-  title?: string;
-  body?: string;
-  primaryLabel?: string;
-  secondaryLabel?: string;
-  tertiaryLabel?: string;
-  onPrimary?: (() => void) | null;
-  onSecondary?: (() => void) | null;
-  onTertiary?: (() => void) | null;
-}
-
-function Modal({ state }: { state: ModalState }) {
-  if (state.kind === 'none') return null;
-
-  const primary = state.primaryLabel ?? 'OK';
-  const secondary = state.secondaryLabel ?? 'Cancel';
-
-  return (
-    <div className="modal-overlay" role="dialog" aria-modal="true">
-      <div className="modal">
-        <div className="modal-header">{state.title ?? ''}</div>
-        <div className="modal-body">{state.body ?? ''}</div>
-        <div className="modal-footer">
-          {state.onTertiary && state.tertiaryLabel ? (
-            <button className="wizard-button" onClick={state.onTertiary}>
-              {state.tertiaryLabel}
-            </button>
-          ) : null}
-          {state.onSecondary ? (
-            <button className="wizard-button" onClick={state.onSecondary}>
-              {secondary}
-            </button>
-          ) : null}
-          {state.onPrimary ? (
-            <button className="wizard-button primary" onClick={state.onPrimary}>
-              {primary}
-            </button>
-          ) : null}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function WizardFrame(props: {
-  title: string;
-  subtitle?: string;
-  children: React.ReactNode;
-  backDisabled: boolean;
-  nextDisabled: boolean;
-  nextLabel: string;
-  cancelDisabled?: boolean;
-  onBack: () => void;
-  onNext: () => void;
-  onCancel: () => void;
-}) {
-  return (
-    <div className="wizard-root">
-      <div className="wizard-window">
-        <div className="wizard-header">
-          <h2 className="wizard-title">{props.title}</h2>
-          {props.subtitle ? <p className="wizard-subtitle">{props.subtitle}</p> : null}
-        </div>
-        <div className="wizard-content">{props.children}</div>
-        <div className="wizard-footer">
-          <button className="wizard-button" disabled={props.backDisabled} onClick={props.onBack}>
-            Back
-          </button>
-          <button className="wizard-button primary" disabled={props.nextDisabled} onClick={props.onNext}>
-            {props.nextLabel}
-          </button>
-          <button className="wizard-button" disabled={props.cancelDisabled} onClick={props.onCancel}>
-            Cancel
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
+// ModalState and Modal imported from components/Modal.tsx
+// WizardFrame imported from components/WizardFrame.tsx
 
 function normalizeWindowsPath(path: string): string {
   return path.trim().split('/').join('\\');
@@ -189,10 +188,23 @@ const FALLBACK_TARGET_FIELDS: TargetField[] = [
 ];
 
 export default function App() {
-  const [page, setPage] = useState<WizardPage>('platform');
-  const [installMode, setInstallMode] = useState<InstallMode>('windows');
+  // Parse query params once on mount
+  const queryParams = useMemo(() => parseQueryParams(), []);
+  const [screenMode, setScreenMode] = useState<ScreenMode>(queryParams.screen);
 
-  const [modal, setModal] = useState<ModalState>({ kind: 'none' });
+  // If started via installer window (screen=installer), skip platform page
+  const initialPage: WizardPage = queryParams.screen === 'installer' ? 'welcome' : 'platform';
+  const [page, setPage] = useState<WizardPage>(initialPage);
+  const [installMode, setInstallMode] = useState<InstallMode>(queryParams.platform);
+
+  const [modal, setModal] = useState<ModalState>(emptyModal());
+
+  // Handle platform selection from chooser (single-window fallback mode)
+  function handlePlatformSelectFallback(platform: 'windows' | 'docker') {
+    setInstallMode(platform);
+    setScreenMode('installer');
+    setPage('welcome');
+  }
 
   // License acceptance state (Page 2)
   const [licenseAccepted, setLicenseAccepted] = useState(false);
@@ -1408,914 +1420,291 @@ export default function App() {
   const selectedTargetsForSource = selectedSourceId ? sourceToTargets[selectedSourceId] ?? [] : [];
   // selectedTargetId is used to drive Unassign button enablement and selection highlighting.
 
-  // Render current page body
+  // Render current page body using extracted step components
   let body: React.ReactNode = null;
   if (page === 'platform') {
     body = (
-      <div onKeyDown={platformKeyDown} tabIndex={0}>
-        <div className="platform-grid" role="group" aria-label="Platform selection">
-          <button
-            id="platform-windows"
-            className="platform-card"
-            onClick={() => {
-              setInstallMode('windows');
-              goTo('welcome');
-            }}
-          >
-            <div className="platform-card-title">Windows</div>
-            <p className="platform-card-body">Install CADalytix directly on Windows.</p>
-          </button>
-          <button
-            id="platform-docker"
-            className="platform-card"
-            onClick={() => {
-              setInstallMode('docker');
-              goTo('welcome');
-            }}
-          >
-            <div className="platform-card-title">Docker / Linux</div>
-            <p className="platform-card-body">Install using Docker (Linux servers, Linux desktops, or Docker hosts).</p>
-          </button>
-        </div>
-      </div>
+      <PlatformStep
+        onSelectWindows={() => {
+          setInstallMode('windows');
+          goTo('welcome');
+        }}
+        onSelectDocker={() => {
+          setInstallMode('docker');
+          goTo('welcome');
+        }}
+        onKeyDown={platformKeyDown}
+      />
     );
   } else if (page === 'welcome') {
-    body = (
-      <div>
-        <p>This wizard will guide you through installing CADalytix.</p>
-        <p>
-          Mode: {installMode === 'windows' ? 'Windows' : 'Docker / Linux'}
-        </p>
-      </div>
-    );
+    body = <WelcomeStep installMode={installMode} />;
   } else if (page === 'license') {
     body = (
-      <div
-        onKeyDown={(e) => {
-          if (e.key === ' ') {
-            e.preventDefault();
-            setLicenseAccepted((v) => !v);
-          }
-          if (e.key === 'PageDown' || e.key === 'PageUp') {
-            const el = licenseScrollRef.current;
-            if (!el) return;
-            e.preventDefault();
-            const delta = e.key === 'PageDown' ? el.clientHeight - 24 : -(el.clientHeight - 24);
-            el.scrollTop = el.scrollTop + delta;
-          }
-        }}
-      >
-        <div className="license-box" ref={licenseScrollRef} aria-label="License text">
-          {licenseText}
-        </div>
-        <div className="wizard-row wizard-inline" style={{ marginTop: 10 }}>
-          <input
-            id="licenseAccept"
-            type="checkbox"
-            checked={licenseAccepted}
-            onChange={(e) => setLicenseAccepted(e.target.checked)}
-          />
-          <label htmlFor="licenseAccept" className="wizard-label" style={{ margin: 0 }}>
-            I accept the terms of the license agreement
-          </label>
-        </div>
-      </div>
+      <LicenseStep
+        licenseText={licenseText}
+        licenseAccepted={licenseAccepted}
+        onAcceptChange={setLicenseAccepted}
+        licenseScrollRef={licenseScrollRef}
+      />
     );
   } else if (page === 'installType') {
     body = (
-      <div>
-        <div className="wizard-row">
-          <label className="wizard-inline">
-            <input
-              type="radio"
-              checked={installationType === 'typical'}
-              onChange={() => setInstallationType('typical')}
-            />
-            Typical (Recommended)
-          </label>
-        </div>
-        <div className="wizard-row">
-          <label className="wizard-inline">
-            <input type="radio" checked={installationType === 'custom'} onChange={() => setInstallationType('custom')} />
-            Custom
-          </label>
-        </div>
-        <div className="wizard-row">
-          <label className="wizard-inline">
-            <input type="radio" checked={installationType === 'import'} onChange={() => setInstallationType('import')} />
-            Import configuration file…
-          </label>
-        </div>
-
-        {installationType === 'import' ? (
-          <div style={{ marginTop: 12 }}>
-            <div className="wizard-row">
-              <label className="wizard-label">Configuration file</label>
-              <div className="wizard-inline">
-                <input
-                  className="wizard-input"
-                  value={importConfigPath}
-                  onChange={(e) => {
-                    setImportConfigPath(e.target.value);
-                    setImportConfigError(null);
-                  }}
-                />
-                <button className="wizard-button" onClick={browseForFile}>
-                  Browse…
-                </button>
-              </div>
-              {importConfigError ? <div className="wizard-error">{importConfigError}</div> : null}
-            </div>
-          </div>
-        ) : null}
-      </div>
+      <InstallTypeStep
+        installationType={installationType}
+        onTypeChange={setInstallationType}
+        importConfigPath={importConfigPath}
+        onImportConfigPathChange={setImportConfigPath}
+        importConfigError={importConfigError}
+        onImportConfigErrorClear={() => setImportConfigError(null)}
+        onBrowseForFile={browseForFile}
+      />
     );
   } else if (page === 'destination') {
     body = (
-      <div>
-        <div className="wizard-row">
-          <label className="wizard-label">Install path</label>
-          <div className="wizard-inline">
-            <input className="wizard-input" value={destinationFolder} onChange={(e) => setDestinationFolder(e.target.value)} />
-            <button className="wizard-button" onClick={browseForFolder}>
-              Browse…
-            </button>
-          </div>
-          <div className="wizard-help">Required space: ~2–5 GB</div>
-          {destinationError ? <div className="wizard-error">{destinationError}</div> : null}
-        </div>
-      </div>
+      <DestinationStep
+        destinationFolder={destinationFolder}
+        onDestinationChange={setDestinationFolder}
+        destinationError={destinationError}
+        onBrowseForFolder={browseForFolder}
+      />
     );
   } else if (page === 'dataSource') {
     body = (
-      <div>
-        <div className="wizard-row">
-          <label className="wizard-inline">
-            <input type="radio" checked={dataSourceKind === 'local'} onChange={() => setDataSourceKind('local')} />
-            Use this server/host (local environment)
-          </label>
-        </div>
-        <div className="wizard-row">
-          <label className="wizard-inline">
-            <input type="radio" checked={dataSourceKind === 'remote'} onChange={() => setDataSourceKind('remote')} />
-            Connect to an existing remote system/database
-          </label>
-        </div>
-        <div style={{ marginTop: 10 }}>
-          <div className="wizard-row">
-            <label className="wizard-label">Host</label>
-            <input
-              className="wizard-input"
-              value={callDataHost}
-              onChange={(e) => setCallDataHost(e.target.value)}
-              disabled={dataSourceKind === 'local'}
-            />
-          </div>
-          <div className="wizard-row wizard-inline">
-            <div style={{ flex: 1 }}>
-              <label className="wizard-label">Port</label>
-              <input
-                className="wizard-input"
-                value={callDataPort}
-                onChange={(e) => setCallDataPort(e.target.value)}
-                disabled={dataSourceKind === 'local'}
-              />
-            </div>
-            <div style={{ flex: 2 }}>
-              <label className="wizard-label">Database</label>
-              <input className="wizard-input" value={callDataDbName} onChange={(e) => setCallDataDbName(e.target.value)} />
-            </div>
-          </div>
-          <div className="wizard-row">
-            <label className="wizard-label">Username</label>
-            <input className="wizard-input" value={callDataUser} onChange={(e) => setCallDataUser(e.target.value)} />
-          </div>
-          <div className="wizard-row">
-            <label className="wizard-label">Password</label>
-            <input
-              className="wizard-input"
-              type="password"
-              value={callDataPassword}
-              onChange={(e) => setCallDataPassword(e.target.value)}
-            />
-          </div>
-        </div>
-        <div className="wizard-row">
-          <label className="wizard-label">Source object name</label>
-          <input className="wizard-input" value={sourceObjectName} onChange={(e) => setSourceObjectName(e.target.value)} />
-        </div>
-        <div className="wizard-help">Keep simple; do not require user to understand internal architecture.</div>
-      </div>
+      <DataSourceStep
+        dataSourceKind={dataSourceKind}
+        onDataSourceKindChange={setDataSourceKind}
+        callDataHost={callDataHost}
+        onCallDataHostChange={setCallDataHost}
+        callDataPort={callDataPort}
+        onCallDataPortChange={setCallDataPort}
+        callDataDbName={callDataDbName}
+        onCallDataDbNameChange={setCallDataDbName}
+        callDataUser={callDataUser}
+        onCallDataUserChange={setCallDataUser}
+        callDataPassword={callDataPassword}
+        onCallDataPasswordChange={setCallDataPassword}
+        sourceObjectName={sourceObjectName}
+        onSourceObjectNameChange={setSourceObjectName}
+      />
     );
   } else if (page === 'database') {
     body = (
-      <div>
-        <div className="wizard-row">
-          Do you want CADalytix to create a NEW database, or use an EXISTING database?
-        </div>
-
-        <div className="platform-grid">
-          <button
-            type="button"
-            className="platform-card"
-            onClick={() => {
-              setDbSetupMode('createNew');
-              setDbTestStatus('idle');
-              setDbTestMessage('');
-            }}
-          >
-            <div className="platform-card-title">Create NEW CADalytix Database</div>
-            <div className="wizard-help">Create a new database for this installation.</div>
-          </button>
-          <button
-            type="button"
-            className="platform-card"
-            onClick={() => {
-              setDbSetupMode('existing');
-              setDbTestStatus('idle');
-              setDbTestMessage('');
-            }}
-          >
-            <div className="platform-card-title">Use EXISTING Database</div>
-            <div className="wizard-help">Connect to an existing database you provide.</div>
-          </button>
-        </div>
-
-        {dbSetupMode === 'createNew' ? (
-          <div style={{ marginTop: 12 }}>
-            {/* Phase 9: New database name field */}
-            <div className="wizard-row">
-              <label className="wizard-label">New Database Name</label>
-              <input
-                className="wizard-input"
-                style={{ width: 280 }}
-                value={newDbName}
-                onChange={(e) => setNewDbName(e.target.value)}
-                placeholder="CADalytix_Production"
-              />
-            </div>
-
-            {/* Phase 9: Admin connection fields */}
-            <div style={{ marginTop: 12, padding: 10, border: '1px solid #ccc', borderRadius: 4 }}>
-              <div className="wizard-row"><strong>Database Server Admin Connection</strong></div>
-              <div className="wizard-help">Provide credentials for an account with CREATE DATABASE privileges.</div>
-              <div className="wizard-row">
-                <label className="wizard-label">Host</label>
-                <input className="wizard-input" style={{ width: 200 }} value={newDbAdminHost} onChange={(e) => setNewDbAdminHost(e.target.value)} placeholder="localhost" />
-              </div>
-              <div className="wizard-row">
-                <label className="wizard-label">Port</label>
-                <input className="wizard-input" style={{ width: 100 }} value={newDbAdminPort} onChange={(e) => setNewDbAdminPort(e.target.value)} placeholder="1433 or 5432" />
-                <span className="wizard-help" style={{ marginLeft: 8 }}>1433 = SQL Server, 5432 = PostgreSQL</span>
-              </div>
-              <div className="wizard-row">
-                <label className="wizard-label">Admin Username</label>
-                <input className="wizard-input" style={{ width: 200 }} value={newDbAdminUser} onChange={(e) => setNewDbAdminUser(e.target.value)} placeholder="sa" />
-              </div>
-              <div className="wizard-row">
-                <label className="wizard-label">Admin Password</label>
-                <input className="wizard-input" style={{ width: 200 }} type="password" value={newDbAdminPassword} onChange={(e) => setNewDbAdminPassword(e.target.value)} />
-              </div>
-              <div className="wizard-row">
-                <button
-                  className="wizard-button"
-                  type="button"
-                  disabled={newDbPrivTestStatus === 'testing' || !newDbAdminHost.trim() || !newDbAdminUser.trim() || !newDbAdminPassword.trim()}
-                  onClick={runCreateNewPrivilegeTest}
-                >
-                  {newDbPrivTestStatus === 'testing' ? 'Testing...' : 'Test Connection & Privileges'}
-                </button>
-                {newDbPrivTestStatus === 'success' ? <span className="wizard-success" style={{ marginLeft: 10 }}>✓ {newDbPrivTestMessage}</span> : null}
-                {newDbPrivTestStatus === 'fail' ? <span className="wizard-error" style={{ marginLeft: 10 }}>✗ {newDbPrivTestMessage}</span> : null}
-              </div>
-            </div>
-
-            <div className="wizard-row" style={{ marginTop: 12 }}>
-              <strong>Where should the new CADalytix database be created?</strong>
-            </div>
-
-            <div className="wizard-row">
-              <label className="wizard-inline">
-                <input type="radio" checked={newDbLocation === 'thisMachine'} onChange={() => setNewDbLocation('thisMachine')} />
-                This machine (default location)
-              </label>
-            </div>
-
-            <div className="wizard-row">
-              <label className="wizard-inline">
-                <input type="radio" checked={newDbLocation === 'specificPath'} onChange={() => setNewDbLocation('specificPath')} />
-                Specific drive / path (advanced)
-              </label>
-            </div>
-
-            {newDbLocation === 'specificPath' ? (
-              <div className="wizard-row">
-                <label className="wizard-label">Database path</label>
-                <div className="wizard-inline">
-                  <input
-                    className="wizard-input"
-                    value={newDbSpecificPath}
-                    onChange={(e) => setNewDbSpecificPath(e.target.value)}
-                  />
-                  <button className="wizard-button" type="button" onClick={browseForNewDbPath}>
-                    Browse…
-                  </button>
-                </div>
-              </div>
-            ) : null}
-
-            <div className="wizard-row">
-              <label className="wizard-label">Max DB size / storage allocation (GB)</label>
-              <input
-                className="wizard-input"
-                style={{ width: 180 }}
-                value={newDbMaxSizeGb}
-                onChange={(e) => setNewDbMaxSizeGb(e.target.value)}
-              />
-            </div>
-
-            {/* Phase 9: Engine-specific sizing fields */}
-            {dbEngine === 'sqlserver' ? (
-              <div style={{ marginTop: 12, padding: 10, border: '1px solid #ccc', borderRadius: 4 }}>
-                <div className="wizard-row"><strong>SQL Server Sizing (optional)</strong></div>
-                <div className="wizard-row">
-                  <label className="wizard-label">Initial data file size (MB)</label>
-                  <input className="wizard-input" style={{ width: 120 }} value={newDbInitialDataSizeMb} onChange={(e) => setNewDbInitialDataSizeMb(e.target.value)} />
-                </div>
-                <div className="wizard-row">
-                  <label className="wizard-label">Initial log file size (MB)</label>
-                  <input className="wizard-input" style={{ width: 120 }} value={newDbInitialLogSizeMb} onChange={(e) => setNewDbInitialLogSizeMb(e.target.value)} />
-                </div>
-                <div className="wizard-row">
-                  <label className="wizard-label">Max data file size (MB, 0 = unlimited)</label>
-                  <input className="wizard-input" style={{ width: 120 }} value={newDbMaxDataSizeMb} onChange={(e) => setNewDbMaxDataSizeMb(e.target.value)} />
-                </div>
-                <div className="wizard-row">
-                  <label className="wizard-label">Max log file size (MB, 0 = unlimited)</label>
-                  <input className="wizard-input" style={{ width: 120 }} value={newDbMaxLogSizeMb} onChange={(e) => setNewDbMaxLogSizeMb(e.target.value)} />
-                </div>
-                <div className="wizard-row">
-                  <label className="wizard-label">Data filegrowth (MB, or negative for %)</label>
-                  <input className="wizard-input" style={{ width: 120 }} value={newDbDataFilegrowth} onChange={(e) => setNewDbDataFilegrowth(e.target.value)} />
-                </div>
-                <div className="wizard-row">
-                  <label className="wizard-label">Log filegrowth (MB, or negative for %)</label>
-                  <input className="wizard-input" style={{ width: 120 }} value={newDbLogFilegrowth} onChange={(e) => setNewDbLogFilegrowth(e.target.value)} />
-                </div>
-                <div className="wizard-help">Leave at defaults for typical installations. Negative values indicate percentage growth (e.g., -10 = 10%).</div>
-              </div>
-            ) : null}
-
-            {dbEngine === 'postgres' ? (
-              <div style={{ marginTop: 12, padding: 10, border: '1px solid #ccc', borderRadius: 4 }}>
-                <div className="wizard-row"><strong>PostgreSQL Options (optional)</strong></div>
-                <div className="wizard-row">
-                  <label className="wizard-label">Owner role (leave blank for current user)</label>
-                  <input className="wizard-input" style={{ width: 200 }} value={newDbPgOwner} onChange={(e) => setNewDbPgOwner(e.target.value)} placeholder="e.g., cadalytix_admin" />
-                </div>
-                <div className="wizard-help">PostgreSQL does not support SQL Server-style sizing. The database grows with available disk space.</div>
-              </div>
-            ) : null}
-
-            {dbCreateValidationError ? <div className="wizard-error">{dbCreateValidationError}</div> : null}
-
-            <div className="wizard-help">
-              Hot retention and archive policy are configured on the next pages.
-            </div>
-          </div>
-        ) : null}
-
-        {dbSetupMode === 'existing' ? (
-          <div style={{ marginTop: 12 }}>
-            <div className="wizard-row">
-              <strong>Where is the existing database hosted? (No login required)</strong>
-            </div>
-
-            <div className="wizard-row">
-              <select
-                className="wizard-select"
-                value={existingHostedWhere}
-                onChange={(e) => setExistingHostedWhere(e.target.value as any)}
-              >
-                <option value="on_prem">On-prem / self-hosted / unknown</option>
-                <option value="aws_rds">AWS RDS / Aurora</option>
-                <option value="azure_sql">Azure SQL / SQL MI</option>
-                <option value="gcp_cloud_sql">GCP Cloud SQL</option>
-                <option value="neon">Neon</option>
-                <option value="supabase">Supabase</option>
-                <option value="other">Other</option>
-              </select>
-            </div>
-
-            <div className="wizard-row">
-              <strong>How do you want to connect?</strong>
-            </div>
-
-            <div className="wizard-row">
-              <label className="wizard-inline">
-                <input type="radio" checked={dbUseConnString} onChange={() => setDbUseConnString(true)} />
-                Connection string
-              </label>
-            </div>
-
-            <div className="wizard-row">
-              <label className="wizard-inline">
-                <input type="radio" checked={!dbUseConnString} onChange={() => setDbUseConnString(false)} />
-                Enter connection details (host/server, port, db name, username, password, TLS)
-              </label>
-            </div>
-
-            <div className="wizard-help" style={{ marginTop: 6 }}>
-              CADalytix does not ask you to log in to AWS/Azure/GCP and does not scan your cloud. You only provide a database endpoint (connection string or host/port/user/password) with explicit permissions.
-            </div>
-
-            {dbUseConnString ? (
-              <div className="wizard-row" style={{ marginTop: 10 }}>
-                <label className="wizard-label">Connection string</label>
-                <input className="wizard-input" value={dbConnString} onChange={(e) => setDbConnString(e.target.value)} />
-              </div>
-            ) : (
-              <div style={{ marginTop: 10 }}>
-                <div className="wizard-row">
-                  <label className="wizard-label">Host</label>
-                  <input className="wizard-input" value={dbHost} onChange={(e) => setDbHost(e.target.value)} />
-                </div>
-                <div className="wizard-row">
-                  <label className="wizard-label">Port</label>
-                  <input
-                    className="wizard-input"
-                    value={dbPort}
-                    onChange={(e) => {
-                      dbPortTouchedRef.current = true;
-                      setDbPort(e.target.value);
-                    }}
-                  />
-                </div>
-                <div className="wizard-row">
-                  <label className="wizard-label">Database</label>
-                  <input className="wizard-input" value={dbName} onChange={(e) => setDbName(e.target.value)} />
-                </div>
-                <div className="wizard-row">
-                  <label className="wizard-label">Username</label>
-                  <input className="wizard-input" value={dbUser} onChange={(e) => setDbUser(e.target.value)} />
-                </div>
-                <div className="wizard-row">
-                  <label className="wizard-label">Password</label>
-                  <input className="wizard-input" type="password" value={dbPassword} onChange={(e) => setDbPassword(e.target.value)} />
-                </div>
-                <div className="wizard-row">
-                  <label className="wizard-label">TLS</label>
-                  <select className="wizard-select" value={dbSslMode} onChange={(e) => setDbSslMode(e.target.value as any)}>
-                    <option value="disable">Disable</option>
-                    <option value="prefer">Prefer</option>
-                    <option value="require">Require</option>
-                  </select>
-                </div>
-              </div>
-            )}
-
-            {dbExistingMissingInputs.length > 0 ? (
-              <div className="wizard-error" style={{ marginTop: 10 }}>
-                Missing required inputs: {dbExistingMissingInputs.join(', ')}
-              </div>
-            ) : null}
-
-            <div className="wizard-row">
-              <button className="wizard-button" disabled={dbTestStatus === 'testing' || !canRunDbTest} onClick={runDbTest}>
-                Test Connection
-              </button>
-            </div>
-
-            {dbTestStatus === 'success' ? <div className="wizard-help">{dbTestMessage || 'Connection successful.'}</div> : null}
-            {dbTestStatus === 'fail' ? <div className="wizard-error">{dbTestMessage || 'Connection failed.'}</div> : null}
-          </div>
-        ) : null}
-    </div>
-  );
+      <DatabaseStep
+        dbSetupMode={dbSetupMode}
+        onDbSetupModeChange={(mode) => {
+          setDbSetupMode(mode);
+          setDbTestStatus('idle');
+          setDbTestMessage('');
+        }}
+        newDbName={newDbName}
+        onNewDbNameChange={setNewDbName}
+        newDbAdminHost={newDbAdminHost}
+        onNewDbAdminHostChange={setNewDbAdminHost}
+        newDbAdminPort={newDbAdminPort}
+        onNewDbAdminPortChange={setNewDbAdminPort}
+        newDbAdminUser={newDbAdminUser}
+        onNewDbAdminUserChange={setNewDbAdminUser}
+        newDbAdminPassword={newDbAdminPassword}
+        onNewDbAdminPasswordChange={setNewDbAdminPassword}
+        newDbPrivTestStatus={newDbPrivTestStatus}
+        newDbPrivTestMessage={newDbPrivTestMessage}
+        onRunCreateNewPrivilegeTest={runCreateNewPrivilegeTest}
+        newDbLocation={newDbLocation}
+        onNewDbLocationChange={setNewDbLocation}
+        newDbSpecificPath={newDbSpecificPath}
+        onNewDbSpecificPathChange={setNewDbSpecificPath}
+        onBrowseForNewDbPath={browseForNewDbPath}
+        newDbMaxSizeGb={newDbMaxSizeGb}
+        onNewDbMaxSizeGbChange={setNewDbMaxSizeGb}
+        dbEngine={dbEngine}
+        newDbInitialDataSizeMb={newDbInitialDataSizeMb}
+        onNewDbInitialDataSizeMbChange={setNewDbInitialDataSizeMb}
+        newDbInitialLogSizeMb={newDbInitialLogSizeMb}
+        onNewDbInitialLogSizeMbChange={setNewDbInitialLogSizeMb}
+        newDbMaxDataSizeMb={newDbMaxDataSizeMb}
+        onNewDbMaxDataSizeMbChange={setNewDbMaxDataSizeMb}
+        newDbMaxLogSizeMb={newDbMaxLogSizeMb}
+        onNewDbMaxLogSizeMbChange={setNewDbMaxLogSizeMb}
+        newDbDataFilegrowth={newDbDataFilegrowth}
+        onNewDbDataFilegrowthChange={setNewDbDataFilegrowth}
+        newDbLogFilegrowth={newDbLogFilegrowth}
+        onNewDbLogFilegrowthChange={setNewDbLogFilegrowth}
+        newDbPgOwner={newDbPgOwner}
+        onNewDbPgOwnerChange={setNewDbPgOwner}
+        dbCreateValidationError={dbCreateValidationError}
+        existingHostedWhere={existingHostedWhere}
+        onExistingHostedWhereChange={setExistingHostedWhere}
+        dbUseConnString={dbUseConnString}
+        onDbUseConnStringChange={setDbUseConnString}
+        dbConnString={dbConnString}
+        onDbConnStringChange={setDbConnString}
+        dbHost={dbHost}
+        onDbHostChange={setDbHost}
+        dbPort={dbPort}
+        onDbPortChange={(val) => {
+          dbPortTouchedRef.current = true;
+          setDbPort(val);
+        }}
+        onDbPortTouched={() => { dbPortTouchedRef.current = true; }}
+        dbName={dbName}
+        onDbNameChange={setDbName}
+        dbUser={dbUser}
+        onDbUserChange={setDbUser}
+        dbPassword={dbPassword}
+        onDbPasswordChange={setDbPassword}
+        dbSslMode={dbSslMode}
+        onDbSslModeChange={setDbSslMode}
+        dbExistingMissingInputs={dbExistingMissingInputs}
+        canRunDbTest={canRunDbTest}
+        dbTestStatus={dbTestStatus}
+        dbTestMessage={dbTestMessage}
+        onRunDbTest={runDbTest}
+      />
+    );
   } else if (page === 'storage') {
     body = (
-      <div>
-        <div className="wizard-row">
-          <label className="wizard-inline">
-            <input type="radio" checked={storageMode === 'defaults'} onChange={() => setStorageMode('defaults')} />
-            Use defaults (Recommended)
-          </label>
-        </div>
-        <div className="wizard-row">
-          <label className="wizard-inline">
-            <input type="radio" checked={storageMode === 'custom'} onChange={() => setStorageMode('custom')} />
-            Customize storage
-          </label>
-        </div>
-
-        {storageMode === 'custom' ? (
-          <div style={{ marginTop: 10 }}>
-            <div className="wizard-row">
-              <label className="wizard-label">Storage location</label>
-              <div className="wizard-row">
-                <label className="wizard-inline">
-                  <input type="radio" checked={storageLocation === 'system'} onChange={() => setStorageLocation('system')} />
-                  Use system disk
-                </label>
-              </div>
-              <div className="wizard-row">
-                <label className="wizard-inline">
-                  <input
-                    type="radio"
-                    checked={storageLocation === 'attached'}
-                    onChange={() => setStorageLocation('attached')}
-                  />
-                  Use attached drive
-                </label>
-              </div>
-              <div className="wizard-row">
-                <label className="wizard-inline">
-                  <input type="radio" checked={storageLocation === 'custom'} onChange={() => setStorageLocation('custom')} />
-                  Use custom path
-                </label>
-              </div>
-            </div>
-
-            {storageLocation === 'custom' ? (
-              <div className="wizard-row">
-                <label className="wizard-label">Custom path</label>
-                <input className="wizard-input" value={storageCustomPath} onChange={(e) => setStorageCustomPath(e.target.value)} />
-              </div>
-            ) : null}
-
-            <div className="wizard-row">
-              <label className="wizard-label">Storage policy</label>
-              <div className="wizard-row">
-                <label className="wizard-inline">
-                  <input type="radio" checked={retentionPolicy === '18'} onChange={() => setRetentionPolicy('18')} />
-                  Rolling 18 months (Recommended)
-                </label>
-              </div>
-              <div className="wizard-row">
-                <label className="wizard-inline">
-                  <input type="radio" checked={retentionPolicy === '12'} onChange={() => setRetentionPolicy('12')} />
-                  Rolling 12 months
-                </label>
-              </div>
-              <div className="wizard-row wizard-inline">
-                <label className="wizard-inline">
-                  <input type="radio" checked={retentionPolicy === 'max'} onChange={() => setRetentionPolicy('max')} />
-                  Max disk usage:
-                </label>
-                <input className="wizard-input" style={{ width: 120 }} value={maxDiskGb} onChange={(e) => setMaxDiskGb(e.target.value)} />
-                <span className="wizard-help">GB</span>
-              </div>
-              <div className="wizard-row">
-                <label className="wizard-inline">
-                  <input type="radio" checked={retentionPolicy === 'keep'} onChange={() => setRetentionPolicy('keep')} />
-                  Keep everything (Not recommended)
-                </label>
-              </div>
-            </div>
-          </div>
-        ) : null}
-      </div>
+      <StorageStep
+        storageMode={storageMode}
+        onStorageModeChange={setStorageMode}
+        storageLocation={storageLocation}
+        onStorageLocationChange={setStorageLocation}
+        storageCustomPath={storageCustomPath}
+        onStorageCustomPathChange={setStorageCustomPath}
+        retentionPolicy={retentionPolicy}
+        onRetentionPolicyChange={setRetentionPolicy}
+        maxDiskGb={maxDiskGb}
+        onMaxDiskGbChange={setMaxDiskGb}
+      />
     );
   } else if (page === 'retention') {
     body = (
-      <div>
-        <div className="wizard-row">Choose how long to keep hot data in the database.</div>
-        <div className="wizard-row">
-          <label className="wizard-inline">
-            <input type="radio" checked={hotRetentionChoice === '12'} onChange={() => setHotRetentionChoice('12')} />
-            12 months (Recommended)
-          </label>
-        </div>
-        <div className="wizard-row">
-          <label className="wizard-inline">
-            <input type="radio" checked={hotRetentionChoice === '18'} onChange={() => setHotRetentionChoice('18')} />
-            18 months (Recommended)
-          </label>
-        </div>
-        <div className="wizard-row wizard-inline">
-          <label className="wizard-inline">
-            <input type="radio" checked={hotRetentionChoice === 'custom'} onChange={() => setHotRetentionChoice('custom')} />
-            Custom:
-          </label>
-          <input
-            className="wizard-input"
-            style={{ width: 120 }}
-            value={hotRetentionCustomMonths}
-            onChange={(e) => setHotRetentionCustomMonths(e.target.value)}
-            disabled={hotRetentionChoice !== 'custom'}
-          />
-          <span className="wizard-help">months</span>
-        </div>
-        {retentionValidationError ? <div className="wizard-error">{retentionValidationError}</div> : null}
-      </div>
+      <RetentionStep
+        hotRetentionChoice={hotRetentionChoice}
+        onHotRetentionChoiceChange={setHotRetentionChoice}
+        hotRetentionCustomMonths={hotRetentionCustomMonths}
+        onHotRetentionCustomMonthsChange={setHotRetentionCustomMonths}
+        retentionValidationError={retentionValidationError}
+      />
     );
   } else if (page === 'archive') {
     body = (
-      <div>
-        <div className="wizard-row">Configure cold storage (archive) settings.</div>
-
-        <div className="wizard-row">
-          <label className="wizard-label">Archive format</label>
-          <div className="wizard-row">
-            <label className="wizard-inline">
-              <input type="radio" checked={archiveFormat === 'zip+ndjson'} onChange={() => setArchiveFormat('zip+ndjson')} />
-              ZIP + NDJSON (Preferred)
-            </label>
-          </div>
-          <div className="wizard-row">
-            <label className="wizard-inline">
-              <input type="radio" checked={archiveFormat === 'zip+csv'} onChange={() => setArchiveFormat('zip+csv')} />
-              ZIP + CSV
-            </label>
-          </div>
-        </div>
-
-        <div className="wizard-row">
-          <label className="wizard-label">Archive destination folder</label>
-          <div className="wizard-row wizard-inline">
-            <input className="wizard-input" value={archiveDestinationPath} onChange={(e) => setArchiveDestinationPath(e.target.value)} />
-            <button className="wizard-button" type="button" onClick={browseForArchiveFolder}>
-              Browse…
-            </button>
-          </div>
-        </div>
-
-        <div className="wizard-row">
-          <label className="wizard-label">Max archive usage cap (GB)</label>
-          <input className="wizard-input" style={{ width: 160 }} value={archiveMaxUsageGb} onChange={(e) => setArchiveMaxUsageGb(e.target.value)} />
-        </div>
-
-        <div className="wizard-row">
-          <label className="wizard-label">Schedule (local server time)</label>
-          <div className="wizard-row wizard-inline">
-            <span className="wizard-help">Day</span>
-            <input
-              className="wizard-input"
-              style={{ width: 90 }}
-              value={archiveScheduleDayOfMonth}
-              onChange={(e) => setArchiveScheduleDayOfMonth(e.target.value)}
-            />
-            <span className="wizard-help">at</span>
-            <input
-              className="wizard-input"
-              style={{ width: 120 }}
-              value={archiveScheduleTimeLocal}
-              onChange={(e) => setArchiveScheduleTimeLocal(e.target.value)}
-            />
-            <span className="wizard-help">(HH:MM)</span>
-          </div>
-        </div>
-
-        <div className="wizard-row">
-          <label className="wizard-inline">
-            <input type="checkbox" checked={archiveCatchUpOnStartup} onChange={(e) => setArchiveCatchUpOnStartup(e.target.checked)} />
-            If missed, run on next startup for eligible months
-          </label>
-        </div>
-
-        {archiveValidationError ? <div className="wizard-error">{archiveValidationError}</div> : null}
-      </div>
+      <ArchiveStep
+        archiveFormat={archiveFormat}
+        onArchiveFormatChange={setArchiveFormat}
+        archiveDestinationPath={archiveDestinationPath}
+        onArchiveDestinationPathChange={setArchiveDestinationPath}
+        onBrowseForArchiveFolder={browseForArchiveFolder}
+        archiveMaxUsageGb={archiveMaxUsageGb}
+        onArchiveMaxUsageGbChange={setArchiveMaxUsageGb}
+        archiveScheduleDayOfMonth={archiveScheduleDayOfMonth}
+        onArchiveScheduleDayOfMonthChange={setArchiveScheduleDayOfMonth}
+        archiveScheduleTimeLocal={archiveScheduleTimeLocal}
+        onArchiveScheduleTimeLocalChange={setArchiveScheduleTimeLocal}
+        archiveCatchUpOnStartup={archiveCatchUpOnStartup}
+        onArchiveCatchUpOnStartupChange={setArchiveCatchUpOnStartup}
+        archiveValidationError={archiveValidationError}
+      />
     );
   } else if (page === 'consent') {
     body = (
-      <div>
-        <div className="wizard-row">
-          <label className="wizard-inline">
-            <input type="checkbox" checked={consentToSync} onChange={(e) => setConsentToSync(e.target.checked)} />
-            Allow CADalytix to receive install metadata + schema mapping to for support improvements
-          </label>
-        </div>
-        <div className="wizard-row">
-          <button className="wizard-button" type="button" onClick={() => setConsentDetailsExpanded((v) => !v)}>
-            {consentDetailsExpanded ? 'Hide details…' : 'Exactly what is sent…'}
-          </button>
-        </div>
-        {consentDetailsExpanded ? (
-          <div className="wizard-help">
-            <div>Install metadata (no passwords or connection strings):</div>
-            <ul>
-              <li>Installer version and timestamp</li>
-              <li>Install mode (Windows / Docker)</li>
-              <li>Selected storage/retention/archive settings</li>
-              <li>Schema mapping (source field names + chosen target fields)</li>
-              <li>Aggregate counts (mapped fields, detected fields)</li>
-            </ul>
-          </div>
-        ) : null}
-        <div className="wizard-help">This setting is stored locally. Network sync is not performed in this phase.</div>
-      </div>
+      <ConsentStep
+        consentToSync={consentToSync}
+        onConsentToSyncChange={setConsentToSync}
+        consentDetailsExpanded={consentDetailsExpanded}
+        onConsentDetailsExpandedToggle={() => setConsentDetailsExpanded((v) => !v)}
+      />
     );
   } else if (page === 'mapping') {
     body = (
-      <div>
-        <div className="wizard-row">
-          We found {sourceFields.length} fields in your source export.
-          {mappingScanning ? ' (Scanning...)' : ''}
-        </div>
-        <div className="wizard-row wizard-inline">
-          <label className="wizard-inline">
-            <input type="checkbox" checked={mappingOverride} onChange={(e) => setMappingOverride(e.target.checked)} />
-            Override: Allow a source field to map to multiple targets
-          </label>
-        </div>
-        <div className="wizard-row wizard-inline">
-          <label className="wizard-inline">
-            <input type="checkbox" checked={mappingDemoMode} onChange={(e) => setMappingDemoMode(e.target.checked)} />
-            Demo mode: Use sample source headers (no database connection)
-          </label>
-        </div>
-        {mappingScanError ? <div className="wizard-error">{mappingScanError}</div> : null}
-
-        <div className="mapping-layout" style={{ marginTop: 10 }}>
-          <div className="mapping-pane">
-            <div className="mapping-pane-header">Source Fields</div>
-            <div className="mapping-pane-search">
-              <input
-                className="wizard-input"
-                placeholder="Search source fields…"
-                value={sourceSearch}
-                onChange={(e) => setSourceSearch(e.target.value)}
-              />
-            </div>
-            <div className="mapping-list" role="listbox" aria-label="Source fields">
-              {filteredSourceFields.map((s) => (
-                <div
-                  key={s.id}
-                  className={[
-                    'mapping-row',
-                    selectedSourceId === s.id ? 'selected' : '',
-                    (sourceToTargets[s.id] ?? []).length > 0 ? 'mapped' : '',
-                  ].join(' ')}
-                  onClick={() => {
-                    setSelectedSourceId(s.id);
-                    setSelectedTargetId(null);
-                  }}
-                >
-                  {s.displayName}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="mapping-pane">
-            <div className="mapping-pane-header">Target Fields</div>
-            <div className="mapping-pane-search">
-              <input
-                className="wizard-input"
-                placeholder="Search target fields…"
-                value={targetSearch}
-                onChange={(e) => setTargetSearch(e.target.value)}
-              />
-            </div>
-            <div className="mapping-list" role="listbox" aria-label="Target fields">
-              {filteredTargetFields.map((t) => {
-                const mappedSource = targetToSource[t.id];
-                const isSelected = selectedTargetId === t.id;
-                const isMapped = !!mappedSource;
-                const highlight =
-                  selectedSourceId && (sourceToTargets[selectedSourceId] ?? []).includes(t.id);
-                return (
-                  <div
-                    key={t.id}
-                    className={[
-                      'mapping-row',
-                      isSelected || highlight ? 'selected' : '',
-                      isMapped ? 'mapped' : '',
-                    ].join(' ')}
-                    onClick={() => {
-                      setSelectedTargetId(t.id);
-                      if (selectedSourceId) {
-                        attemptMap(selectedSourceId, t.id);
-                      }
-                    }}
-                  >
-                    {t.name}
-                    {t.required ? ' *' : ''}
-                    {mappedSource ? ` — mapped to ${sourceFields.find((s) => s.id === mappedSource)?.displayName ?? mappedSource}` : ''}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-
-        <div className="mapping-preview">
-          <div>
-            Select a source field, then select a target field.
-          </div>
-          <div style={{ marginTop: 8 }}>
-            <div>Source: [{selectedSource?.displayName ?? ''}]</div>
-            <div>↓</div>
-            <div>
-              Target(s): [{selectedTargetsForSource.map((id) => targetFields.find((t) => t.id === id)?.name ?? id).join(', ')}]
-            </div>
-          </div>
-          <div style={{ marginTop: 10 }} className="wizard-inline">
-            <button className="wizard-button" disabled={!selectedSourceId || !selectedTargetId} onClick={unassignSelected}>
-              Unassign
-            </button>
-            <div className="wizard-help">
-              Mapped: {mappedCount} / Target fields: {targetFields.length} — Unassigned source fields: {sourceFields.filter((s) => (sourceToTargets[s.id] ?? []).length === 0).length}
-            </div>
-          </div>
-          {requiredTargetsUnmapped.length > 0 ? (
-            <div className="wizard-error" style={{ marginTop: 10 }}>
-              Required fields not mapped: {requiredTargetsUnmapped.map((t) => t.name).join(', ')}
-            </div>
-          ) : null}
-        </div>
-      </div>
+      <MappingStep
+        sourceFields={sourceFields}
+        targetFields={targetFields}
+        filteredSourceFields={filteredSourceFields}
+        filteredTargetFields={filteredTargetFields}
+        sourceToTargets={sourceToTargets}
+        targetToSource={targetToSource}
+        selectedSourceId={selectedSourceId}
+        selectedTargetId={selectedTargetId}
+        selectedSource={selectedSource ?? undefined}
+        selectedTargetsForSource={selectedTargetsForSource}
+        mappingScanning={mappingScanning}
+        mappingOverride={mappingOverride}
+        mappingDemoMode={mappingDemoMode}
+        mappingScanError={mappingScanError}
+        sourceSearch={sourceSearch}
+        targetSearch={targetSearch}
+        mappedCount={mappedCount}
+        requiredTargetsUnmapped={requiredTargetsUnmapped}
+        onSourceSearchChange={setSourceSearch}
+        onTargetSearchChange={setTargetSearch}
+        onMappingOverrideChange={setMappingOverride}
+        onMappingDemoModeChange={setMappingDemoMode}
+        onSelectedSourceIdChange={(id: string | null) => {
+          setSelectedSourceId(id);
+          setSelectedTargetId(null);
+        }}
+        onSelectedTargetIdChange={(id: string | null) => {
+          setSelectedTargetId(id);
+          if (selectedSourceId && id) {
+            attemptMap(selectedSourceId, id);
+          }
+        }}
+        onAttemptMap={attemptMap}
+        onUnassignSelected={unassignSelected}
+      />
     );
   } else if (page === 'ready') {
     body = (
-      <div>
-        <div className="wizard-row">
-          <div style={{ border: '1px solid #bcbcbc', background: '#f8f8f8', padding: 12 }}>
-            <div><strong>Mode:</strong> {installMode === 'windows' ? 'Windows' : 'Docker / Linux'}</div>
-            <div><strong>Install path:</strong> {destinationFolder}</div>
-            <div>
-              <strong>Database setup:</strong>{' '}
-              {dbSetupMode === 'createNew'
-                ? `Create NEW CADalytix Database — Max ${newDbMaxSizeGb} GB${
-                    newDbLocation === 'specificPath'
-                      ? ` — Path ${newDbSpecificPath || '(not set)'}`
-                      : ' — This machine (default location)'
-                  }`
-                : `Use EXISTING Database — ${
-                    existingHostedWhere === 'on_prem'
-                      ? 'On-prem / self-hosted / unknown'
-                      : existingHostedWhere === 'aws_rds'
-                        ? 'AWS RDS / Aurora'
-                        : existingHostedWhere === 'azure_sql'
-                          ? 'Azure SQL / SQL MI'
-                          : existingHostedWhere === 'gcp_cloud_sql'
-                            ? 'GCP Cloud SQL'
-                            : existingHostedWhere === 'neon'
-                              ? 'Neon'
-                              : existingHostedWhere === 'supabase'
-                                ? 'Supabase'
-                                : 'Other'
-                  } (password hidden)`}
-            </div>
-            <div><strong>Storage policy:</strong> {storageMode === 'defaults' ? 'Defaults' : 'Custom'} — {retentionPolicy === '18' ? 'Rolling 18 months' : retentionPolicy === '12' ? 'Rolling 12 months' : retentionPolicy === 'max' ? `Max disk ${maxDiskGb} GB` : 'Keep everything'}</div>
-            <div><strong>Hot retention:</strong> {hotRetentionMonths} months</div>
-            <div>
-              <strong>Archive policy:</strong> {archiveFormat === 'zip+ndjson' ? 'ZIP + NDJSON' : 'ZIP + CSV'} — {archiveDestinationPath || '(not set)'} — Cap {archiveMaxUsageGb} GB — Day {archiveScheduleDayOfMonth} at {archiveScheduleTimeLocal} — Catch-up {archiveCatchUpOnStartup ? 'Yes' : 'No'}
-            </div>
-            <div><strong>Consent to Sync:</strong> {consentToSync ? 'Yes' : 'No'}</div>
-            <div><strong>Mapping:</strong> {mappedCount} mapped — required mapped: {requiredTargetsUnmapped.length === 0 ? 'Yes' : 'No'}</div>
-          </div>
-        </div>
-        <div className="wizard-help">Passwords are not shown.</div>
-      </div>
+      <ReadyStep
+        installMode={installMode}
+        destinationFolder={destinationFolder}
+        dbSetupMode={dbSetupMode}
+        newDbMaxSizeGb={newDbMaxSizeGb}
+        newDbLocation={newDbLocation}
+        newDbSpecificPath={newDbSpecificPath}
+        existingHostedWhere={existingHostedWhere}
+        storageMode={storageMode}
+        retentionPolicy={retentionPolicy}
+        maxDiskGb={maxDiskGb}
+        hotRetentionMonths={hotRetentionMonths}
+        archiveFormat={archiveFormat}
+        archiveDestinationPath={archiveDestinationPath}
+        archiveMaxUsageGb={archiveMaxUsageGb}
+        archiveScheduleDayOfMonth={archiveScheduleDayOfMonth}
+        archiveScheduleTimeLocal={archiveScheduleTimeLocal}
+        archiveCatchUpOnStartup={archiveCatchUpOnStartup}
+        consentToSync={consentToSync}
+        mappedCount={mappedCount}
+        requiredTargetsUnmappedLength={requiredTargetsUnmapped.length}
+      />
     );
   } else if (page === 'installing') {
-    const elapsedMs = progress?.elapsedMs;
-    const etaMs = progress?.etaMs;
-    const fmt = (ms?: number) => {
-      if (!ms || ms <= 0) return '';
-      const total = Math.floor(ms / 1000);
-      const m = Math.floor(total / 60);
-      const s = total % 60;
-      return `${m}:${String(s).padStart(2, '0')}`;
-    };
-
     body = (
-      <div>
-        <div className="wizard-row">Progress</div>
-        <progress className="progress-bar" value={progress?.percent ?? 0} max={100} />
-        <div className="wizard-row">Current action: {progress?.message ?? ''}</div>
-        <div className="wizard-row wizard-inline">
-          {elapsedMs ? <div className="wizard-help">Elapsed: {fmt(elapsedMs)}</div> : null}
-          {etaMs ? <div className="wizard-help">Estimated remaining: {fmt(etaMs)}</div> : null}
-        </div>
-        {installDetailLines.length > 0 ? (
-          <div className="install-detail-log" aria-label="Installation details">
-            {installDetailLines.map((l, idx) => (
-              <div key={`${idx}-${l}`}>{l}</div>
-            ))}
-          </div>
-        ) : null}
-        {installError ? <div className="wizard-error">{installError}</div> : null}
-      </div>
+      <InstallingStep
+        progress={progress}
+        installDetailLines={installDetailLines}
+        installError={installError}
+      />
     );
   } else if (page === 'complete') {
     body = (
-      <div>
-        <p>CADalytix Setup has completed.</p>
-        {installLogFolder ? <div className="wizard-help">Log folder: {installLogFolder}</div> : null}
-        {installManifestPath ? <div className="wizard-help">Install manifest: {installManifestPath}</div> : null}
-        {installMappingPath ? <div className="wizard-help">Mapping: {installMappingPath}</div> : null}
-        {installConfigPath ? <div className="wizard-help">Install config: {installConfigPath}</div> : null}
-        <div className="wizard-row wizard-inline">
-          <input id="launchAfter" type="checkbox" disabled />
-          <label htmlFor="launchAfter" className="wizard-label" style={{ margin: 0 }}>
-            Launch CADalytix
-          </label>
-        </div>
-      </div>
+      <CompleteStep
+        installLogFolder={installLogFolder}
+        installManifestPath={installManifestPath}
+        installMappingPath={installMappingPath}
+        installConfigPath={installConfigPath}
+      />
     );
-}
+  }
+
+  // If on chooser screen, render PlatformChooser
+  if (screenMode === 'chooser' && page === 'platform') {
+    return <PlatformChooser onPlatformSelect={handlePlatformSelectFallback} />;
+  }
+
+  // Calculate step info for progress indicator
+  const stepInfo = getStepInfo(page);
+  const stepNames = WIZARD_PAGES.map((p) => WIZARD_STEP_NAMES[p]);
 
   return (
     <>
@@ -2326,6 +1715,10 @@ export default function App() {
         nextDisabled={nextDisabled}
         nextLabel={nextLabel}
         cancelDisabled={cancelDisabled}
+        platform={installMode}
+        currentStep={stepInfo.currentStep}
+        totalSteps={stepInfo.totalSteps}
+        stepNames={stepNames}
         onBack={onBack}
         onNext={onNext}
         onCancel={openCancelConfirm}

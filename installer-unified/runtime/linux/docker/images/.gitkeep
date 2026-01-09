@@ -1,0 +1,13 @@
+# Docker Images Directory
+#
+# This directory contains pre-built Docker images as .tar files.
+# These are loaded during installation for offline/air-gapped deployments.
+#
+# To build images, run:
+#   ../build/build-images.sh
+#
+# Expected files:
+#   - cadalytix-web-latest.tar
+#   - cadalytix-worker-latest.tar
+#   - SHA256SUMS.txt
+

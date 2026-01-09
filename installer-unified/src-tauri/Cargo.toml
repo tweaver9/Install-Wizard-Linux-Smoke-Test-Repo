@@ -83,6 +83,7 @@ windows-service = "0.6"
 # Linux-Specific
 [target.'cfg(target_os = "linux")'.dependencies]
 libsystemd = "0.7"
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3.24.0"

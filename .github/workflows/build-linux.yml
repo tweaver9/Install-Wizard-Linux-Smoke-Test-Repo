@@ -52,7 +52,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            installer-unified/src-tauri/target
+            installer-unified/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
@@ -97,17 +97,31 @@ jobs:
 
       - name: Bundle Linux packages
         working-directory: installer-unified
-        run: cargo tauri bundle --verbose
+        run: |
+          set -euxo pipefail
+          echo "=== Current directory ==="
+          pwd
+          echo "=== Contents ==="
+          ls -la
+          echo "=== src-tauri contents ==="
+          ls -la src-tauri/
+          echo "=== Running cargo tauri bundle ==="
+          cargo tauri bundle --verbose
 
       # ─────────────────────────────────────────────────
       # Debug: List bundle contents
       # ─────────────────────────────────────────────────
       - name: List bundle directory
+        if: always()
         run: |
+          echo "=== Looking everywhere for packages ==="
+          find . -name "*.deb" 2>/dev/null || echo "No .deb found"
+          find . -name "*.rpm" 2>/dev/null || echo "No .rpm found"
+          find . -name "*.AppImage" 2>/dev/null || echo "No .AppImage found"
           echo "=== Bundle directory contents ==="
-          find installer-unified/src-tauri/target/release/bundle -type f 2>/dev/null || echo "Bundle directory not found"
-          echo "=== Looking for packages ==="
-          find installer-unified -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" 2>/dev/null || echo "No packages found"
+          find installer-unified/target/release/bundle -type f 2>/dev/null || echo "Bundle directory not found"
+          echo "=== Full target/release listing ==="
+          ls -laR installer-unified/target/release/ 2>/dev/null | head -100 || echo "No release directory"
 
       # ─────────────────────────────────────────────────
       # Upload Artifacts
@@ -116,21 +130,21 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-deb
-          path: installer-unified/src-tauri/target/release/bundle/deb/*.deb
+          path: installer-unified/target/release/bundle/deb/*.deb
           if-no-files-found: error
 
       - name: Upload .rpm package
         uses: actions/upload-artifact@v4
         with:
           name: linux-rpm
-          path: installer-unified/src-tauri/target/release/bundle/rpm/*.rpm
+          path: installer-unified/target/release/bundle/rpm/*.rpm
           if-no-files-found: error
 
       - name: Upload .AppImage
         uses: actions/upload-artifact@v4
         with:
           name: linux-appimage
-          path: installer-unified/src-tauri/target/release/bundle/appimage/*.AppImage
+          path: installer-unified/target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
 
       # ─────────────────────────────────────────────────
@@ -138,7 +152,7 @@ jobs:
       # ─────────────────────────────────────────────────
       - name: Generate SHA256 checksums
         run: |
-          cd installer-unified/src-tauri/target/release/bundle
+          cd installer-unified/target/release/bundle
           find . -type f \( -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" \) \
             -exec sha256sum {} \; > checksums-linux.txt
           cat checksums-linux.txt
@@ -147,5 +161,27 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-checksums
-          path: installer-unified/src-tauri/target/release/bundle/checksums-linux.txt
+          path: installer-unified/target/release/bundle/checksums-linux.txt
 
+      # ─────────────────────────────────────────────────
+      # Create Linux Bundle
+      # ─────────────────────────────────────────────────
+      - name: Create Linux Bundle
+        working-directory: installer-unified
+        run: |
+          chmod +x scripts/make-linux-bundle.sh
+          bash scripts/make-linux-bundle.sh
+
+      - name: Upload Linux Bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-bundle
+          path: installer-unified/dist/CADalytix_Linux_Bundle_*.tar.gz
+          if-no-files-found: error
+
+      - name: Upload Bundle Checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-bundle-checksum
+          path: installer-unified/dist/*.sha256
+          if-no-files-found: warn
