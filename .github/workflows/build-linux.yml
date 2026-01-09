@@ -92,10 +92,18 @@ jobs:
       # Build Tauri App
       # ─────────────────────────────────────────────────
       - name: Build Tauri Linux packages
-        working-directory: installer-unified/src-tauri
+        working-directory: installer-unified
+        run: cargo tauri build
+
+      # ─────────────────────────────────────────────────
+      # Debug: List bundle contents
+      # ─────────────────────────────────────────────────
+      - name: List bundle directory
         run: |
-          cargo build --release
-          cargo tauri bundle
+          echo "=== Bundle directory contents ==="
+          find installer-unified/src-tauri/target/release/bundle -type f 2>/dev/null || echo "Bundle directory not found"
+          echo "=== Looking for packages ==="
+          find installer-unified -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" 2>/dev/null || echo "No packages found"
 
       # ─────────────────────────────────────────────────
       # Upload Artifacts
