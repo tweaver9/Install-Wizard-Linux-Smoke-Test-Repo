@@ -1,0 +1,139 @@
+# GitHub Actions workflow to build Linux packages (.deb, .rpm, .AppImage)
+# Runs on real Ubuntu runner with full FUSE support for AppImage
+
+name: Build Linux Packages
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'installer-unified/**'
+      - '.github/workflows/build-linux.yml'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'installer-unified/**'
+  workflow_dispatch: # Manual trigger
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-22.04
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ─────────────────────────────────────────────────
+      # Install System Dependencies
+      # ─────────────────────────────────────────────────
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config curl git file \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libsoup-3.0-dev \
+            patchelf \
+            libfuse2
+
+      # ─────────────────────────────────────────────────
+      # Setup Rust
+      # ─────────────────────────────────────────────────
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            installer-unified/src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli
+
+      # ─────────────────────────────────────────────────
+      # Setup Node.js
+      # ─────────────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: installer-unified/frontend/package-lock.json
+
+      # ─────────────────────────────────────────────────
+      # Build Frontend
+      # ─────────────────────────────────────────────────
+      - name: Install frontend dependencies
+        working-directory: installer-unified/frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: installer-unified/frontend
+        run: npm run build
+
+      # ─────────────────────────────────────────────────
+      # Run Tests
+      # ─────────────────────────────────────────────────
+      - name: Run Rust tests
+        working-directory: installer-unified/src-tauri
+        run: cargo test --lib
+
+      # ─────────────────────────────────────────────────
+      # Build Tauri App
+      # ─────────────────────────────────────────────────
+      - name: Build Tauri Linux packages
+        working-directory: installer-unified/src-tauri
+        run: |
+          cargo build --release
+          cargo tauri bundle
+
+      # ─────────────────────────────────────────────────
+      # Upload Artifacts
+      # ─────────────────────────────────────────────────
+      - name: Upload .deb package
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          path: installer-unified/src-tauri/target/release/bundle/deb/*.deb
+          if-no-files-found: error
+
+      - name: Upload .rpm package
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-rpm
+          path: installer-unified/src-tauri/target/release/bundle/rpm/*.rpm
+          if-no-files-found: error
+
+      - name: Upload .AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: installer-unified/src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
+      # ─────────────────────────────────────────────────
+      # Generate checksums
+      # ─────────────────────────────────────────────────
+      - name: Generate SHA256 checksums
+        run: |
+          cd installer-unified/src-tauri/target/release/bundle
+          find . -type f \( -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" \) \
+            -exec sha256sum {} \; > checksums-linux.txt
+          cat checksums-linux.txt
+
+      - name: Upload checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-checksums
+          path: installer-unified/src-tauri/target/release/bundle/checksums-linux.txt
+
